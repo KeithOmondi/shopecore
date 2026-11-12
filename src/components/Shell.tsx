@@ -3,8 +3,9 @@ import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
 import { useFocusTrap } from '../lib/focus-trap'
 
 import { ROLES, type Role } from '../data/seed'
-import { canOpen, navigate, NAV_GROUPS, pageFor, ROLE_PAGE_COUNT, usePath } from '../lib/router'
+import { canOpen, displayLabel, navigate, NAV_GROUPS, pageFor, ROLE_PAGE_COUNT, usePath } from '../lib/router'
 import { useStore } from '../lib/store'
+import { useSupport } from '../lib/support'
 import { AvatarTile, Badge, Btn, Notice, SettingRow } from './ui'
 
 const nameInitials = (n: string) => n.split(/s+/).map((p) => p[0] ?? '').join('').slice(0, 2).toUpperCase()
@@ -13,6 +14,8 @@ export function Sidebar() {
   const { role, collapsed, toggleCollapsed, permissions, user } = useStore()
   const path = usePath()
   const allowed = { has: (label: string) => canOpen(role, label, permissions[role]) }
+  const { tickets, chats } = useSupport()
+  const counts = { tickets: tickets.filter((t) => t.kind === 'Customer' && t.status !== 'Resolved').length, chats: chats.filter((c) => !c.closed).reduce((n, c) => n + c.unread, 0) }
 
   return (
     <aside className="sidebar" aria-label="Main navigation">
@@ -30,9 +33,10 @@ export function Sidebar() {
               <div className="nav-label">{g.label}</div>
               <div className="nav">
                 {items.map((i) => (
-                  <button key={i.label} className={i.match(path) ? 'active' : ''} aria-current={i.match(path) ? 'page' : undefined} aria-label={i.label} title={i.label} onClick={() => navigate(i.path)}>
+                  <button key={i.label} className={i.match(path) ? 'active' : ''} aria-current={i.match(path) ? 'page' : undefined} aria-label={displayLabel(i.label, role, permissions[role])} title={displayLabel(i.label, role, permissions[role])} onClick={() => navigate(i.path)}>
                     <span className="ic" aria-hidden="true">{i.icon}</span>
-                    <span className="nav-text">{i.label}</span>
+                    <span className="nav-text">{displayLabel(i.label, role, permissions[role])}</span>
+                    {i.badge && counts[i.badge] > 0 && <span className="nav-count">{counts[i.badge]}</span>}
                   </button>
                 ))}
               </div>
@@ -90,7 +94,7 @@ export function Topbar() {
       <div className="crumb">
         <span>ShopCore</span>
         <span style={{ padding: '0 7px', color: '#D1D5DB' }}>/</span>
-        <b>{pageFor(path)?.label ?? (path === '/account' ? 'My account' : 'Not found')}</b>
+        <b>{displayLabel(pageFor(path)?.label ?? (path === '/account' ? 'My account' : 'Not found'), role, permissions[role])}</b>
       </div>
       <div className="top-actions">
         <label className="global-search">

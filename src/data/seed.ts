@@ -14,7 +14,7 @@ export const kes = (n: number) => `KES ${Math.round(n).toLocaleString('en-US')}`
 export const ROLES = ['Owner admin', 'Operations manager', 'Dispatch manager', 'Finance analyst', 'Customer support', 'Rider manager', 'IT support'] as const
 export type Role = (typeof ROLES)[number]
 
-export const MODULES = ['Overview', 'Orders', 'Products', 'Customers', 'Riders', 'Payments', 'Reports', 'Settings'] as const
+export const MODULES = ['Overview', 'Orders', 'Products', 'Customers', 'Riders', 'Payments', 'Payroll', 'Reports', 'Support', 'Settings'] as const
 export const ACTIONS = ['View', 'Create', 'Edit', 'Delete', 'Export'] as const
 export type Module = (typeof MODULES)[number]
 export type Permissions = Record<Module, boolean[]>
@@ -25,27 +25,27 @@ export const seedPermissions = (): Record<Role, Permissions> => ({
   'Owner admin': Object.fromEntries(MODULES.map((m) => [m, row(true, true, true, true, true)])) as Permissions,
   'Operations manager': {
     Overview: row(true), Orders: row(true, true, true, false, true), Products: row(true, true, true), Customers: row(true, false, true),
-    Riders: row(true, true, true), Payments: row(false), Reports: row(true, false, false, false, true), Settings: row(true),
+    Riders: row(true, true, true), Payments: row(false), Payroll: row(false), Reports: row(true, false, false, false, true), Support: row(true, true, true, false, true), Settings: row(true),
   },
   'Dispatch manager': {
     Overview: row(true), Orders: row(true, true, true, false, true), Products: row(true), Customers: row(true), Riders: row(true, true, true, false, true),
-    Payments: row(false), Reports: row(true, false, false, false, true), Settings: row(true),
+    Payments: row(false), Payroll: row(false), Reports: row(true, false, false, false, true), Support: row(true), Settings: row(true),
   },
   'Finance analyst': {
     Overview: row(true), Orders: row(true, false, false, false, true), Products: row(true), Customers: row(true), Riders: row(false),
-    Payments: row(true, true, true, false, true), Reports: row(true, false, false, false, true), Settings: row(true),
+    Payments: row(true, true, true, false, true), Payroll: row(true, true, true, false, true), Reports: row(true, false, false, false, true), Support: row(true, false, true), Settings: row(true),
   },
   'Customer support': {
-    Overview: row(true), Orders: row(true, false, true), Products: row(true), Customers: row(true, true, true), Riders: row(false),
-    Payments: row(false), Reports: row(false), Settings: row(false),
+    Overview: row(false), Orders: row(true, false, false, false, true), Products: row(true), Customers: row(true, true, true), Riders: row(false),
+    Payments: row(false), Payroll: row(false), Reports: row(false), Support: row(true, true, true, false, true), Settings: row(false),
   },
   'IT support': {
-    Overview: row(true), Orders: row(false), Products: row(false), Customers: row(false), Riders: row(false),
-    Payments: row(false), Reports: row(false), Settings: row(true, true, true, false, true),
+    Overview: row(false), Orders: row(false), Products: row(false), Customers: row(false), Riders: row(false),
+    Payments: row(false), Payroll: row(false), Reports: row(false), Support: row(false), Settings: row(true, true, true, false, true),
   },
   'Rider manager': {
     Overview: row(true), Orders: row(true, false, true), Products: row(false), Customers: row(false), Riders: row(true, true, true, false, true),
-    Payments: row(false), Reports: row(true, false, false, false, true), Settings: row(false),
+    Payments: row(false), Payroll: row(false), Reports: row(true, false, false, false, true), Support: row(true), Settings: row(false),
   },
 })
 

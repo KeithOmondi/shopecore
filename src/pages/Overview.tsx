@@ -3,11 +3,62 @@ import { useState } from 'react'
 import { AvatarTile, Badge, Btn, downloadCsv, PageHead, Panel, Stat } from '../components/ui'
 import { OVERVIEW, TOP_AREAS, TOP_PRODUCTS, type Range } from '../data/seed'
 import { navigate } from '../lib/router'
+import { SupportOverview } from './Support'
 import { useStore } from '../lib/store'
 
 const RANGES = Object.keys(OVERVIEW) as Range[]
 
+/** IT support's home: accounts and system health only, with no sales, orders or money. */
+function SystemHome() {
+  const { audit, staff, integrations, backups } = useStore()
+  const awaiting = staff.filter((s) => s.status === 'Invited').length
+  const down = integrations.filter((i) => i.status !== 'Connected')
+  return (
+    <>
+      <PageHead title="System overview" desc="Staff accounts, access and system health." />
+      <div className="grid stats">
+        <Stat label="Staff accounts" value={String(staff.length)} trend={`${staff.filter((s) => s.status === 'Active').length} active`} icon="◫" />
+        <Stat label="Awaiting first sign-in" value={String(awaiting)} trend="Temporary password issued" icon="＋" up={awaiting === 0} />
+        <Stat label="Integrations" value={`${integrations.length - down.length}/${integrations.length}`} trend={down.length ? `${down.length} need attention` : 'All connected'} icon="⌘" up={down.length === 0} />
+        <Stat label="Last backup" value={backups[0]?.when ?? 'None'} trend={backups[0]?.type ?? ''} icon="◷" />
+      </div>
+      <div className="grid lower-grid">
+        <Panel title="Integrations" sub="Connection status" right={<Btn small onClick={() => navigate('/integrations')}>Manage</Btn>}>
+          {integrations.map((i) => (
+            <div className="list-row" key={i.id}>
+              <div><strong className="prod-name">{i.name}</strong><div className="subtext">{i.purpose}</div></div>
+              <Badge tone={i.status === 'Connected' ? 'green' : 'amber'}>{i.status}</Badge>
+            </div>
+          ))}
+        </Panel>
+        <Panel title="Quick actions" sub="Accounts and access">
+          <div className="list-row"><strong>Create a staff account</strong><Btn small onClick={() => navigate('/staff/new')}>Create</Btn></div>
+          <div className="list-row"><strong>Reset a password</strong><Btn small onClick={() => navigate('/staff')}>Open staff list</Btn></div>
+          <div className="list-row"><strong>Review roles and access</strong><Btn small onClick={() => navigate('/roles')}>Open</Btn></div>
+        </Panel>
+      </div>
+      <Panel title="Recent activity" sub="Latest changes across your workspace" right={<Btn small onClick={() => navigate('/audit')}>View audit log</Btn>}>
+        {audit.slice(0, 5).map((a) => (
+          <div className="list-row" key={a.id}>
+            <div className="list-main">
+              <AvatarTile text={a.user === 'System' ? 'SY' : a.user.split(' ').map((p) => p[0]).join('').slice(0, 2)} />
+              <span><strong>{a.user} <span style={{ fontWeight: 400, color: 'var(--muted)' }}>{a.action.toLowerCase()}</span></strong><small>{a.module} · {a.when}</small></span>
+            </div>
+            <Badge>{a.type}</Badge>
+          </div>
+        ))}
+      </Panel>
+    </>
+  )
+}
+
 export default function Overview() {
+  const { can, role } = useStore()
+  if (can('Overview', 'View')) return <BusinessOverview />
+  return role === 'IT support' ? <SystemHome /> : <SupportOverview />
+}
+
+function BusinessOverview() {
   const { audit, toast } = useStore()
   const [range, setRange] = useState<Range>('Last 30 days')
   const d = OVERVIEW[range]

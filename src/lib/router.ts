@@ -27,10 +27,37 @@ export interface NavItem {
   path: string
   /** Paths (prefixes) under which this item is highlighted. */
   match: (path: string) => boolean
+  /** A live count shown beside the label. */
+  badge?: 'tickets' | 'chats'
 }
 
 export const NAV_GROUPS: { label: string; items: NavItem[] }[] = [
   { label: 'OVERVIEW', items: [{ label: 'Executive overview', icon: '◫', path: '/', match: (p) => p === '/' }] },
+  {
+    label: 'SUPPORT',
+    items: [
+      { label: 'Tickets inbox', icon: '▤', path: '/support/tickets', match: (p) => p === '/support/tickets' || p.startsWith('/support/tickets/'), badge: 'tickets' },
+      { label: 'Live chat console', icon: '◌', path: '/support/chat', match: (p) => p === '/support/chat' || p.startsWith('/support/chat/'), badge: 'chats' },
+      { label: 'Rider support tickets', icon: '↗', path: '/support/rider-tickets', match: (p) => p === '/support/rider-tickets' || p.startsWith('/support/rider-tickets/') },
+      { label: 'Disputes', icon: '⚖', path: '/support/disputes', match: (p) => p === '/support/disputes' || p.startsWith('/support/disputes/') },
+    ],
+  },
+  {
+    label: 'CLAIMS',
+    items: [
+      { label: 'Refund requests', icon: '↶', path: '/support/refunds', match: (p) => p === '/support/refunds' || p.startsWith('/support/refunds/') },
+      { label: 'Returns requests', icon: '↩', path: '/support/returns', match: (p) => p === '/support/returns' || p.startsWith('/support/returns/') },
+      { label: 'Customer lookup', icon: '⌕', path: '/support/lookup', match: (p) => p === '/support/lookup' || p.startsWith('/support/lookup/') },
+    ],
+  },
+  {
+    label: 'QUALITY & CONTENT',
+    items: [
+      { label: 'Reviews and complaints moderation', icon: '☆', path: '/support/reviews', match: (p) => p === '/support/reviews' || p.startsWith('/support/reviews/') },
+      { label: 'Knowledge base and FAQ editor', icon: '?', path: '/support/help', match: (p) => p === '/support/help' || p.startsWith('/support/help/') },
+      { label: 'Canned responses manager', icon: '≡', path: '/support/canned', match: (p) => p === '/support/canned' || p.startsWith('/support/canned/') },
+    ],
+  },
   {
     label: 'DISPATCH',
     items: [
@@ -70,8 +97,50 @@ export const NAV_GROUPS: { label: string; items: NavItem[] }[] = [
   {
     label: 'FINANCE',
     items: [
-      { label: 'Payments', icon: '⇄', path: '/payments', match: (p) => p === '/payments' },
-      { label: 'Payouts and cash', icon: '◉', path: '/payouts', match: (p) => p === '/payouts' },
+      { label: 'Finance overview', icon: '▦', path: '/finance', match: (p) => p === '/finance' },
+      { label: 'Payments', icon: '⇄', path: '/payments', match: (p) => p === '/payments' || p.startsWith('/payments/') },
+      { label: 'Failed payments and retries', icon: '!', path: '/finance/failed', match: (p) => p === '/finance/failed' },
+      { label: 'Reconciliation', icon: '≋', path: '/finance/reconciliation', match: (p) => p === '/finance/reconciliation' },
+      { label: 'Refunds ledger', icon: '↶', path: '/finance/refunds', match: (p) => p === '/finance/refunds' },
+      { label: 'Taxes and VAT report', icon: '%', path: '/finance/vat', match: (p) => p === '/finance/vat' },
+      { label: 'Profit and loss summary', icon: '▤', path: '/finance/pnl', match: (p) => p === '/finance/pnl' },
+      { label: 'Accounts and ledger', icon: '▥', path: '/finance/accounts', match: (p) => p === '/finance/accounts' },
+    ],
+  },
+  {
+    label: 'COD & PAYOUTS',
+    items: [
+      { label: 'COD management', icon: '▣', path: '/finance/cod', match: (p) => p === '/finance/cod' },
+      { label: 'Record COD deposit', icon: '＋', path: '/finance/cod/deposit', match: (p) => p === '/finance/cod/deposit' },
+      { label: 'Rider payouts', icon: '⇧', path: '/payouts', match: (p) => p === '/payouts' },
+      { label: 'Payout batch', icon: '▦', path: '/finance/batch', match: (p) => p === '/finance/batch' || p.startsWith('/finance/batch/') },
+      { label: 'Rider earnings statements', icon: '≡', path: '/finance/statements', match: (p) => p === '/finance/statements' },
+      { label: 'Store settlements', icon: '◈', path: '/finance/settlements', match: (p) => p === '/finance/settlements' },
+    ],
+  },
+  {
+    label: 'BILLING & REPORTS',
+    items: [
+      { label: 'Invoices list', icon: '▤', path: '/finance/invoices', match: (p) => p === '/finance/invoices' || p.startsWith('/finance/invoices/') },
+      { label: 'Sales reports', icon: '↗', path: '/finance/sales', match: (p) => p === '/finance/sales' },
+      { label: 'Delivery cost report', icon: '⌖', path: '/finance/delivery-cost', match: (p) => p === '/finance/delivery-cost' },
+      { label: 'Expense tracking', icon: '−', path: '/finance/expenses', match: (p) => p === '/finance/expenses' },
+      { label: 'Export center', icon: '⇩', path: '/finance/exports', match: (p) => p === '/finance/exports' },
+    ],
+  },
+  {
+    label: 'PAYROLL',
+    items: [
+      { label: 'Payroll runs', icon: '₭', path: '/finance/payroll', match: (p) => p === '/finance/payroll' || (p.startsWith('/finance/payroll/') && !p.startsWith('/finance/payroll/employees') && !p.startsWith('/finance/payroll/remittances')) },
+      { label: 'Employee pay profiles', icon: '♙', path: '/finance/payroll/employees', match: (p) => p === '/finance/payroll/employees' },
+      { label: 'Statutory remittances', icon: '⚖', path: '/finance/payroll/remittances', match: (p) => p === '/finance/payroll/remittances' },
+    ],
+  },
+  {
+    label: 'CONTROLS',
+    items: [
+      { label: 'Financial period close', icon: '✓', path: '/finance/close', match: (p) => p === '/finance/close' },
+      { label: 'Finance settings', icon: '⚙', path: '/finance/settings', match: (p) => p === '/finance/settings' },
     ],
   },
   { label: 'INSIGHTS', items: [{ label: 'Reports', icon: '↗', path: '/reports', match: (p) => p === '/reports' }] },
@@ -127,7 +196,13 @@ export const PAGE_MODULE: Record<string, string> = {
   'Dispatch overview': 'Orders', 'Order queue': 'Orders', 'Assign rider': 'Orders', 'Live order detail': 'Orders', 'Reassign order': 'Orders', 'Delayed and stuck orders': 'Orders',
   'Cancelled and failed deliveries': 'Orders', Orders: 'Orders', Products: 'Products', 'Categories and stock': 'Products',
   'Riders list': 'Riders', 'Rider detail': 'Riders', 'Rider application review': 'Riders', 'Delivery zones': 'Riders', 'Rider shifts and capacity': 'Riders', 'Incidents and SOS alerts': 'Riders',
-  Payments: 'Payments', 'Payouts and cash': 'Payments', Reports: 'Reports',
+  Payments: 'Payments', 'Rider payouts': 'Payments',
+  'Finance overview': 'Payments', 'Failed payments and retries': 'Payments', Reconciliation: 'Payments', 'Refunds ledger': 'Payments', 'Taxes and VAT report': 'Payments', 'Profit and loss summary': 'Payments', 'Accounts and ledger': 'Payments',
+  'COD management': 'Payments', 'Record COD deposit': 'Payments', 'Payout batch': 'Payments', 'Rider earnings statements': 'Payments', 'Store settlements': 'Payments',
+  'Invoices list': 'Payments', 'Sales reports': 'Payments', 'Delivery cost report': 'Payments', 'Expense tracking': 'Payments', 'Export center': 'Payments', 'Financial period close': 'Payments', 'Finance settings': 'Payments',
+  'Payroll runs': 'Payroll', 'Employee pay profiles': 'Payroll', 'Statutory remittances': 'Payroll', Reports: 'Reports',
+  'Tickets inbox': 'Support', 'Live chat console': 'Support', 'Rider support tickets': 'Support', Disputes: 'Support', 'Refund requests': 'Support', 'Returns requests': 'Support', 'Customer lookup': 'Support',
+  'Reviews and complaints moderation': 'Support', 'Knowledge base and FAQ editor': 'Support', 'Canned responses manager': 'Support',
 }
 
 /** Customer support only sees the monitoring side of dispatch (not assignment or rider management). */
@@ -146,3 +221,9 @@ export function canOpen(role: string, label: string, perms: Record<string, boole
 export const ROLE_PAGE_COUNT = (role: string, perms: Record<string, boolean[]> | undefined) => ALL.filter((l) => canOpen(role, l, perms)).length
 
 export const pageFor = (path: string) => NAV_GROUPS.flatMap((g) => g.items).find((i) => i.match(path))
+
+/** The home page is a different page for different people, so its name changes with the role. */
+export function displayLabel(label: string, role: string, perms: Record<string, boolean[]> | undefined): string {
+  if (label !== 'Executive overview' || role === 'Owner admin' || perms?.Overview?.[0]) return label
+  return role === 'IT support' ? 'System overview' : 'Support overview'
+}

@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { OrderSupport } from './order-support'
 
 import { AvatarTile, Badge, Btn, DataTable, downloadCsv, Field, Notice, PageHead, Panel, SettingRow, Stat, Tabs, type Column } from '../components/ui'
 import { ORDER_FLOW, type Order, type OrderStatus, type PayMethod } from '../data/commerce'
@@ -266,6 +267,7 @@ export function OrderDetail({ id }: { id: string }) {
         </div>
 
         <div className="grid">
+          <OrderSupport order={order} />
           <Panel title="Customer" right={customer && <Btn small onClick={() => navigate(`/customers/${customer.id}`)}>Profile</Btn>}>
             <div className="prod-name">{order.customer}</div>
             <div className="subtext" style={{ marginBottom: 8 }}>{customer?.phone} · {customer?.email}</div>
