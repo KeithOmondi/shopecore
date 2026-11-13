@@ -128,10 +128,11 @@ type FieldProps = {
   options?: readonly (string | { value: string; label: string })[]
   multiline?: boolean
   hint?: string
+  disabled?: boolean
 }
-export function Field({ label, value, onChange, type = 'text', placeholder, error, options, multiline, hint }: FieldProps) {
+export function Field({ label, value, onChange, type = 'text', placeholder, error, options, multiline, hint, disabled }: FieldProps) {
   const id = useId()
-  const common = { id, value, 'aria-invalid': !!error, 'aria-describedby': error ? `${id}-e` : undefined }
+  const common = { id, value, disabled, 'aria-invalid': !!error, 'aria-describedby': error ? `${id}-e` : undefined }
   return (
     <div className="field">
       <label htmlFor={id}>{label}</label>

@@ -1,14 +1,14 @@
 import { useState, type FormEvent } from 'react'
 
 import { Notice, isEmail } from '../components/ui'
-import { DEMO_PASSWORD, useStore } from '../lib/store'
+import { useStore } from '../lib/store'
 
 /**
  * One sign-in for everyone who works in the admin, owners and staff alike. People don't create their own
  * accounts or reset their own passwords: IT support or an owner does that for them.
  */
 export default function Login() {
-  const { login, toast, staff } = useStore()
+  const { login, toast } = useStore()
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [show, setShow] = useState(false)
@@ -16,18 +16,17 @@ export default function Login() {
   const [busy, setBusy] = useState(false)
   const [help, setHelp] = useState(false)
 
-  const submit = (e: FormEvent) => {
+  const submit = async (e: FormEvent) => {
     e.preventDefault()
+    if (busy) return
     if (!isEmail(email)) return setError('Enter your work email address.')
     if (!password) return setError('Enter your password.')
     setBusy(true)
     setError('')
-    setTimeout(() => {
-      const err = login(email, password)
-      setBusy(false)
-      if (err) setError(err)
-      else toast('Welcome back')
-    }, 500)
+    const err = await login(email, password)
+    setBusy(false)
+    if (err) setError(err)
+    else toast('Welcome back')
   }
 
   return (
@@ -61,11 +60,6 @@ export default function Login() {
             </div>
           )}
           <button className="btn primary" type="submit" style={{ width: '100%' }} disabled={busy}>{busy ? 'Signing in…' : 'Sign in'}</button>
-          <div style={{ marginTop: 18 }}>
-            <Notice>
-              Demo: sign in as <b>{staff[0]?.email}</b> with password <b>{DEMO_PASSWORD}</b>. Other staff emails (for example <b>faith@shopcore.co</b> or <b>brian@shopcore.co</b> for IT support) open the admin with their own role. <b>david@shopcore.co</b> has a temporary password and must choose a new one.
-            </Notice>
-          </div>
         </form>
       </main>
     </div>

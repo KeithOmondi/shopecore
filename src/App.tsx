@@ -188,7 +188,7 @@ function route(path: string): ReactNode {
 }
 
 function Shell() {
-  const { collapsed, role, permissions, user, offline, setForceOffline, toast, maintenance, setMaintenance, logout } = useStore()
+  const { collapsed, role, permissions, user, booting, offline, setForceOffline, toast, maintenance, setMaintenance, logout } = useStore()
   const path = usePath()
   const page = pageFor(path)
 
@@ -198,6 +198,8 @@ function Shell() {
   }, [page, path, role, permissions])
 
   const blocked = page && !canOpen(role, page.label, permissions[role])
+
+  if (booting) return <div className="login-page"><div role="status" aria-live="polite" style={{ margin: 'auto', opacity: 0.7 }}>Loading…</div></div>
 
   if (!user) return (
     <>
@@ -241,18 +243,29 @@ function Shell() {
   )
 }
 
+/**
+ * Pages that are not connected to the server yet keep their sample data in these providers. They are rebuilt once the team list
+ * has arrived after sign-in, so the samples that refer to staff (payroll, support agents) have people to refer to.
+ */
+function SamplePages({ children }: { children: ReactNode }) {
+  const { user, staff } = useStore()
+  return (
+    <SupportProvider key={`${user?.id ?? 'out'}:${staff.length ? 'ready' : 'wait'}`}>
+      <FinanceProvider>
+        <MarketingProvider>
+          <InventoryProvider>{children}</InventoryProvider>
+        </MarketingProvider>
+      </FinanceProvider>
+    </SupportProvider>
+  )
+}
+
 export default function App() {
   return (
     <StoreProvider>
-      <SupportProvider>
-        <FinanceProvider>
-          <MarketingProvider>
-            <InventoryProvider>
-              <Shell />
-            </InventoryProvider>
-          </MarketingProvider>
-        </FinanceProvider>
-      </SupportProvider>
+      <SamplePages>
+        <Shell />
+      </SamplePages>
     </StoreProvider>
   )
 }

@@ -1,12 +1,10 @@
 import { useState } from 'react'
 
 import { AvatarTile, Badge, Btn, DataTable, downloadCsv, Field, isEmail, Notice, PageHead, Panel, SettingRow, Stat, type Column } from '../components/ui'
-import { initials, ROLE_PREVIEW, ROLES, TOTAL_SEATS, type Staff } from '../data/seed'
+import { ACTIONS, initials, MODULES, TOTAL_SEATS, type Staff } from '../data/seed'
 import { navigate } from '../lib/router'
 import { useStore } from '../lib/store'
 import { useDirty, useUnsavedGuard } from '../lib/unsaved'
-
-const ROLE_OPTIONS = [...ROLES.filter((r) => r !== 'Owner admin'), 'Custom role'] as const
 
 /** The one-time password, with a copy button. */
 export function TempPassword({ value }: { value: string }) {
@@ -20,7 +18,7 @@ export function TempPassword({ value }: { value: string }) {
 }
 
 export function StaffList() {
-  const { staff, openDrawer, closeDrawer, openModal, updateStaff, toast, log, canManageStaff, resetPassword } = useStore()
+  const { staff, roles: roleList, openDrawer, closeDrawer, openModal, updateStaff, toast, canManageStaff, resetPassword } = useStore()
   const [roleFilter, setRoleFilter] = useState('All roles')
 
   const rows = roleFilter === 'All roles' ? staff : staff.filter((s) => s.role === roleFilter)
@@ -52,8 +50,10 @@ export function StaffList() {
       message: 'A temporary password is created and shown once. Share it with them securely. They must choose their own at the next sign-in.',
       confirm: 'Reset password',
       onConfirm: () => {
-        const temp = resetPassword(s.id)
-        setTimeout(() => openModal({ title: 'Temporary password', message: `For ${s.name} (${s.email}). It won’t be shown again.`, body: <TempPassword value={temp} />, confirm: 'Done', cancelLabel: 'Close' }), 0)
+        resetPassword(s.id).then(
+          (temp) => setTimeout(() => openModal({ title: 'Temporary password', message: `For ${s.name} (${s.email}). It won’t be shown again.`, body: <TempPassword value={temp} />, confirm: 'Done', cancelLabel: 'Close' }), 0),
+          (e: Error) => toast(`Couldn’t reset the password: ${e.message}`, 'error'),
+        )
       },
     })
 
@@ -84,9 +84,7 @@ export function StaffList() {
                     confirm: suspend ? 'Suspend' : 'Restore',
                     danger: suspend,
                     onConfirm: () => {
-                      updateStaff(s.id, { status: suspend ? 'Suspended' : 'Active' })
-                      log(`${suspend ? 'Suspended' : 'Restored'} staff member · ${s.name}`, 'Staff', 'Security')
-                      toast(suspend ? `${s.name} suspended` : `${s.name} restored`)
+                      updateStaff(s.id, { status: suspend ? 'Suspended' : 'Active' }).then((err) => toast(err ?? (suspend ? `${s.name} suspended` : `${s.name} restored`), err ? 'error' : 'success'))
                     },
                   })
                 }}>
@@ -125,7 +123,7 @@ export function StaffList() {
         tools={
           <select className="select" aria-label="Filter by role" value={roleFilter} onChange={(e) => setRoleFilter(e.target.value)}>
             <option>All roles</option>
-            {ROLES.map((r) => <option key={r}>{r}</option>)}
+            {roleList.map((r) => <option key={r.name}>{r.name}</option>)}
           </select>
         }
         bulk={{
@@ -138,9 +136,10 @@ export function StaffList() {
               danger: true,
               onConfirm: () => {
                 const hit = staff.filter((s) => ids.includes(s.id) && s.role !== 'Owner admin')
-                hit.forEach((s) => updateStaff(s.id, { status: 'Suspended' }))
-                log(`Suspended ${hit.length} staff members`, 'Staff', 'Security')
-                toast(`${hit.length} suspended`)
+                Promise.all(hit.map((s) => updateStaff(s.id, { status: 'Suspended' }))).then((r) => {
+                  const failed = r.filter(Boolean).length
+                  toast(failed ? `${hit.length - failed} suspended, ${failed} couldn’t be` : `${hit.length} suspended`, failed ? 'error' : 'success')
+                })
               },
             }),
         }}
@@ -152,12 +151,14 @@ export function StaffList() {
 
 /** Create a staff account (`/staff/new`) or edit one (`/staff/:id`). Staff don't sign themselves up. */
 export function StaffForm({ id }: { id?: string }) {
-  const { staff, addStaff, updateStaff, resetPassword, canManageStaff, toast, openModal, log } = useStore()
+  const { staff, roles, permissions, addStaff, updateStaff, resetPassword, canManageStaff, toast, openModal, user } = useStore()
+  const roleOptions = roles.filter((r) => r.name !== 'Owner admin' || user?.role === 'Owner admin').map((r) => r.name)
+  const [busy, setBusy] = useState(false)
   const existing = id ? staff.find((s) => s.id === id) : undefined
   const [name, setName] = useState(existing?.name ?? '')
   const [email, setEmail] = useState(existing?.email ?? '')
   const [phone, setPhone] = useState(existing?.phone ?? '')
-  const [role, setRole] = useState(existing?.role ?? ROLE_OPTIONS[0])
+  const [role, setRole] = useState(existing?.role ?? roleOptions[0] ?? '')
   const [errors, setErrors] = useState<Record<string, string>>({})
   const unsaved = useUnsavedGuard(useDirty({ name, email, phone, role }))
 
@@ -181,18 +182,21 @@ export function StaffForm({ id }: { id?: string }) {
   const validate = () => {
     const e: Record<string, string> = {}
     if (name.trim().split(/\s+/).length < 2) e.name = 'Enter their first and last name'
-    if (!isEmail(email)) e.email = 'Enter a valid work email'
-    else if (staff.some((s) => s.email.toLowerCase() === email.trim().toLowerCase() && s.id !== id)) e.email = 'A team member with this email already exists'
+    if (!existing && !isEmail(email)) e.email = 'Enter a valid work email'
+    else if (!existing && staff.some((s) => s.email.toLowerCase() === email.trim().toLowerCase())) e.email = 'A team member with this email already exists'
+    if (!role) e.role = 'Choose a role'
     if (phone.trim() && !/^\+?[\d\s]{9,16}$/.test(phone.trim())) e.phone = 'Enter a valid phone number'
     setErrors(e)
     return Object.keys(e).length === 0
   }
 
-  const save = () => {
-    if (!validate()) return
+  const save = async () => {
+    if (busy || !validate()) return
     if (existing) {
-      updateStaff(existing.id, { name: name.trim(), email: email.trim(), phone: phone.trim(), role })
-      log(`Updated staff member · ${name.trim()}`, 'Staff', 'Access')
+      setBusy(true)
+      const err = await updateStaff(existing.id, { name: name.trim(), phone: phone.trim(), role })
+      setBusy(false)
+      if (err) return setErrors({ name: err })
       toast('Staff member updated')
       unsaved()
       navigate('/staff')
@@ -203,10 +207,14 @@ export function StaffForm({ id }: { id?: string }) {
       message: `${name.trim().split(' ')[0]} gets an account with a temporary password. They must choose their own the first time they sign in.`,
       confirm: 'Create account',
       onConfirm: () => {
-        const { temp } = addStaff({ name: name.trim(), email: email.trim(), phone: phone.trim(), role })
-        unsaved()
-        navigate('/staff')
-        setTimeout(() => openModal({ title: 'Account created', message: `Temporary password for ${email.trim()}. Share it securely. It won’t be shown again.`, body: <TempPassword value={temp} />, confirm: 'Done', cancelLabel: 'Close' }), 0)
+        addStaff({ name: name.trim(), email: email.trim(), phone: phone.trim(), role }).then(
+          ({ temp }) => {
+            unsaved()
+            navigate('/staff')
+            setTimeout(() => openModal({ title: 'Account created', message: `Temporary password for ${email.trim()}. Share it securely. It won’t be shown again.`, body: <TempPassword value={temp} />, confirm: 'Done', cancelLabel: 'Close' }), 0)
+          },
+          (e: Error) => toast(`Couldn’t create the account: ${e.message}`, 'error'),
+        )
       },
     })
   }
@@ -217,12 +225,15 @@ export function StaffForm({ id }: { id?: string }) {
       message: 'A temporary password is created and shown once. They must choose their own at the next sign-in.',
       confirm: 'Reset password',
       onConfirm: () => {
-        const temp = resetPassword(existing!.id)
-        setTimeout(() => openModal({ title: 'Temporary password', message: `For ${existing!.email}. It won’t be shown again.`, body: <TempPassword value={temp} />, confirm: 'Done', cancelLabel: 'Close' }), 0)
+        resetPassword(existing!.id).then(
+          (temp) => setTimeout(() => openModal({ title: 'Temporary password', message: `For ${existing!.email}. It won’t be shown again.`, body: <TempPassword value={temp} />, confirm: 'Done', cancelLabel: 'Close' }), 0),
+          (e: Error) => toast(`Couldn’t reset the password: ${e.message}`, 'error'),
+        )
       },
     })
 
-  const preview = ROLE_PREVIEW[role] ?? ROLE_PREVIEW['Custom role']!
+  const matrix = (permissions as Record<string, Record<string, boolean[]>>)[role]
+  const preview: [string, string][] = matrix ? MODULES.filter((m) => matrix[m]?.[0]).map((m): [string, string] => [m, ACTIONS.filter((_, j) => matrix[m]?.[j]).join(', ')]) : []
 
   return (
     <>
@@ -241,16 +252,16 @@ export function StaffForm({ id }: { id?: string }) {
           <h2>{existing ? `Edit ${existing.name}` : 'Staff details'}</h2>
           <div className="form-grid">
             <Field label="Full name" value={name} onChange={setName} placeholder="Enter full name" error={errors.name} />
-            <Field label="Work email" type="email" value={email} onChange={setEmail} placeholder="name@shopcore.co" error={errors.email} />
+            <Field label="Work email" type="email" value={email} onChange={setEmail} placeholder="name@shopcore.co" error={errors.email} hint={existing ? 'A work email can’t be changed. Create a new account if it has changed.' : undefined} disabled={!!existing} />
             <Field label="Phone number" value={phone} onChange={setPhone} placeholder="+254 712 555 104" error={errors.phone} />
-            <Field label="Role" value={role} onChange={setRole} options={existing && !(ROLE_OPTIONS as readonly string[]).includes(existing.role) ? [existing.role, ...ROLE_OPTIONS] : ROLE_OPTIONS} />
+            <Field label="Role" value={role} onChange={setRole} error={errors.role} options={existing && !roleOptions.includes(existing.role) ? [existing.role, ...roleOptions] : roleOptions} />
           </div>
           <div style={{ margin: '3px 0 15px' }}>
             <Notice>{existing ? 'Role permissions can be reviewed and adjusted in Roles and permissions.' : 'Accounts are created here, not by the staff member. A temporary password is shown once after you create the account.'}</Notice>
           </div>
           <div className="form-actions">
             <Btn onClick={() => navigate('/staff')}>Cancel</Btn>
-            <Btn variant="primary" onClick={save}>{existing ? 'Save changes' : 'Create account'}</Btn>
+            <Btn variant="primary" disabled={busy} onClick={save}>{existing ? 'Save changes' : 'Create account'}</Btn>
           </div>
         </section>
         <Panel title="Role access preview" sub={`${role} permissions`}>
