@@ -2,6 +2,7 @@ import { useState } from 'react'
 
 import { Bars, MonthSelect, monthOptions, saveRows, Stats } from '../components/finance-ui'
 import { Detail, NotFoundCard, useNow, when } from '../components/support-ui'
+import { PermissionDenied } from '../components/states'
 import { Badge, Btn, DataTable, Field, Notice, PageHead, Panel, Stat, type Column } from '../components/ui'
 import {
   EXPORT_DATASETS, EXPORT_FORMATS, EXPENSE_CATEGORIES, invoiceBalance, invoicePaid, invoiceStatus, invoiceSubtotal, invoiceTotal, invoiceVat, monthEnd, monthKey, monthLabel, monthStart, runTotals,
@@ -12,6 +13,7 @@ import { computePnl, pctOf } from '../lib/finance-calc'
 import { useFinance, vatIn } from '../lib/finance'
 import { navigate } from '../lib/router'
 import { useStore } from '../lib/store'
+import { useDirty, useUnsavedGuard } from '../lib/unsaved'
 
 const DAY = 86_400_000
 const invTone = (s: InvoiceStatus) => (s === 'Paid' ? 'green' : s === 'Overdue' ? 'red' : s === 'Draft' ? 'gray' : 'blue')
@@ -43,7 +45,7 @@ export function InvoicesList() {
         <Stat label="Collected" value={kes(live.reduce((n, i) => n + invoicePaid(i), 0))} trend="Payments recorded" icon="✓" />
         <Stat label="Drafts" value={String(f.invoices.filter((i) => i.draft).length)} trend="Not sent yet" icon="✎" />
       </Stats>
-      <DataTable title="Invoices" rows={rows} rowKey={(i) => i.id} columns={cols} searchLabel="Search invoice or business" searchText={(i) => `${i.id} ${i.customer} ${i.contact}`}
+      <DataTable title="Invoices" rows={rows} rowKey={(i) => i.id} columns={cols} searchLabel="Search invoice or business" emptyTitle="No invoices yet" empty="Create an invoice to bill a business account." emptyAction={can('Payments', 'Create') ? { label: 'Create an invoice', onClick: () => navigate('/finance/invoices/new') } : undefined} searchText={(i) => `${i.id} ${i.customer} ${i.contact}`}
         tools={<select className="sp-select auto" aria-label="Invoice status" value={status} onChange={(e) => setStatus(e.target.value)}><option>All invoice statuses</option>{['Draft', 'Sent', 'Partly paid', 'Paid', 'Overdue'].map((s) => <option key={s}>{s}</option>)}</select>}
         actions={(i) => <Btn small onClick={() => navigate(`/finance/invoices/${i.id}`)}>Open</Btn>} />
     </>
@@ -61,6 +63,7 @@ export function InvoiceForm() {
   const [terms, setTerms] = useState('30')
   const [lines, setLines] = useState<{ desc: string; qty: string; unit: string }[]>([{ desc: '', qty: '1', unit: '' }])
   const [err, setErr] = useState<Record<string, string>>({})
+  const unsaved = useUnsavedGuard(useDirty({ customer, contact, email, pin, address, terms, lines }))
   const parsed: InvoiceLine[] = lines.map((l) => ({ desc: l.desc.trim(), qty: Number(l.qty), unit: Number(l.unit) }))
   const sub = parsed.reduce((n, l) => n + (l.qty > 0 && l.unit > 0 ? l.qty * l.unit : 0), 0)
   const vatRate = Number(business.vat) || 16
@@ -75,6 +78,7 @@ export function InvoiceForm() {
     const now = Date.now()
     const id = f.addInvoice({ customer: customer.trim(), contact: contact.trim(), email: email.trim(), pin: pin.trim(), address: address.trim() || 'Nairobi, Kenya', issued: now, due: now + Number(terms) * DAY, lines: parsed, vatRate, draft })
     toast(draft ? 'Draft saved' : 'Invoice created')
+    unsaved()
     navigate(`/finance/invoices/${id}`)
   }
   return (
@@ -288,10 +292,10 @@ function ExpenseForm() {
     if (!payee.trim()) e.payee = 'Who was paid?'
     if (!description.trim()) e.description = 'Say what it was for'
     if (!Number.isInteger(n) || n <= 0) e.amount = 'Enter the amount in whole shillings'
-    if (!date || Date.parse(date) > Date.now()) e.date = 'Choose today or an earlier date'
+    if (!date || date > new Date().toLocaleDateString('en-CA')) e.date = 'Choose today or an earlier date'
     setErr(e)
     if (Object.keys(e).length) return
-    const bad = f.addExpense({ date: Date.parse(date), category, payee: payee.trim(), description: description.trim(), amount: n })
+    const bad = f.addExpense({ date: new Date(`${date}T12:00:00`).getTime(), category, payee: payee.trim(), description: description.trim(), amount: n })
     if (bad) return setErr({ date: bad })
     closeModal()
     toast('Expense added')
@@ -476,7 +480,7 @@ export function PeriodClose() {
 
 export function FinanceSettingsPage() {
   const f = useFinance()
-  const { toast, can, log, business } = useStore()
+  const { toast, can, log, business, role, requestAccess, requestedAccess } = useStore()
   const [v, setV] = useState({ cogsRate: String(f.settings.cogsRate), storeCommission: String(f.settings.storeCommission), processingFee: String(f.settings.processingFee), codWindowHours: String(f.settings.codWindowHours), expenseLimit: String(f.settings.expenseLimit) })
   const [err, setErr] = useState<Record<string, string>>({})
   const edit = can('Payments', 'Edit')
@@ -497,6 +501,7 @@ export function FinanceSettingsPage() {
   return (
     <>
       <PageHead title="Finance settings" desc="The rates and limits behind the finance reports." actions={<Btn variant="primary" disabled={!edit} onClick={save}>Save changes</Btn>} />
+      {!edit && <section className="card panel" style={{ marginBottom: 14 }}><PermissionDenied title="You can read these settings but not change them" body="Only finance staff and owners can edit rates and limits." yourRole={role} requiredRole="Finance analyst or Owner admin" onRequest={() => requestAccess('Finance settings')} requested={requestedAccess.includes('Finance settings')} /></section>}
       <div className="sp-two">
         <div className="sp-stack">
           <Panel title="Margins and fees">

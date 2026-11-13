@@ -4,6 +4,30 @@ import { Badge, Btn, DataTable, Field, Notice, PageHead, Panel, SettingRow, Stat
 import { KEY_SCOPES, SERVICES, TEMPLATE_VARS, type ApiKey, type Channel, type Integration, type Template } from '../data/seed'
 import { useStore } from '../lib/store'
 
+function MaintenancePanel() {
+  const { maintenance, setMaintenance, openModal, toast, log } = useStore()
+  const [message, setMessage] = useState(maintenance.message)
+  const [eta, setEta] = useState(String(maintenance.etaMinutes))
+  const [err, setErr] = useState('')
+  const save = (on: boolean) => {
+    const n = Number(eta)
+    if (!Number.isInteger(n) || n < 1 || n > 600) return setErr('Enter the minutes remaining, from 1 to 600.')
+    setErr('')
+    setMaintenance({ on, message: message.trim(), etaMinutes: n })
+    log(on ? 'Turned maintenance mode on' : 'Turned maintenance mode off', 'System health', 'Security')
+    toast(on ? 'Maintenance mode is on' : 'Maintenance mode is off')
+  }
+  return (
+    <Panel title="Maintenance mode" sub="Show a ‘we’ll be back shortly’ screen to everyone except owners and IT support" right={<Badge tone={maintenance.on ? 'amber' : 'green'}>{maintenance.on ? 'On' : 'Off'}</Badge>}>
+      <Field label="Message for staff (optional)" multiline value={message} onChange={setMessage} placeholder="Planned database upgrade. We’ll be back shortly." />
+      <Field label="Minutes remaining" type="number" value={eta} onChange={(v) => { setEta(v); setErr('') }} error={err} />
+      <div className="actions">
+        {maintenance.on ? <Btn variant="primary" onClick={() => save(false)}>Turn off maintenance mode</Btn> : <Btn variant="danger" onClick={() => openModal({ title: 'Turn on maintenance mode?', message: 'Everyone except owners and IT support is shown the maintenance screen straight away. The customer storefront and rider app are not affected.', confirm: 'Turn on', danger: true, onConfirm: () => save(true) })}>Turn on maintenance mode</Btn>}
+      </div>
+    </Panel>
+  )
+}
+
 // ---- templates ------------------------------------------------------------------------------------
 
 const CHANNELS: readonly Channel[] = ['Email', 'SMS', 'Push']
@@ -322,6 +346,8 @@ export function Health() {
           <SettingRow title="Encryption" sub="AES-256 at rest" right={<Badge>Active</Badge>} />
         </Panel>
       </div>
+      <MaintenancePanel />
+      <div style={{ height: 14 }} />
       <section className="card table-card">
         <div className="table-head">
           <h2>Recent backups</h2>

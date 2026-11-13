@@ -31,7 +31,7 @@ export function CodManagement() {
   const last = (r: Rider) => f.codRecords.find((c) => c.riderId === r.id)?.at
 
   const cols: Column<Rider>[] = [
-    { key: 'r', header: 'Rider', sort: (a, b) => a.name.localeCompare(b.name), render: (r) => <><button className="sp-link" onClick={() => navigate(`/riders/${r.id}`)}>{r.name}</button><span className="sp-sub">{r.id.toUpperCase()}</span></> },
+    { key: 'r', header: 'Rider', sort: (a, b) => a.name.localeCompare(b.name), render: (r) => <>{can('Riders', 'View') ? <button className="sp-link" onClick={() => navigate(`/riders/${r.id}`)}>{r.name}</button> : <b>{r.name}</b>}<span className="sp-sub">{r.id.toUpperCase()}</span></> },
     { key: 'z', header: 'Zone', render: (r) => r.zone },
     { key: 'h', header: 'Cash held', sort: (a, b) => a.cashHeld - b.cashHeld, render: (r) => <b style={{ color: r.cashHeld ? 'var(--amber)' : 'var(--green)' }}>{kes(r.cashHeld)}</b> },
     { key: 'd', header: 'Handed in (recorded)', render: (r) => kes(paid(r)) },
@@ -164,7 +164,7 @@ export function RiderPayouts() {
   }
   const cols: Column<Payout>[] = [
     { key: 'id', header: 'Payout', render: (p) => <b>{p.id}</b> },
-    { key: 'r', header: 'Rider', sort: (a, b) => a.rider.localeCompare(b.rider), render: (p) => <button className="link-btn" onClick={() => navigate(`/riders/${p.riderId}`)}>{p.rider}</button> },
+    { key: 'r', header: 'Rider', sort: (a, b) => a.rider.localeCompare(b.rider), render: (p) => (can('Riders', 'View') ? <button className="link-btn" onClick={() => navigate(`/riders/${p.riderId}`)}>{p.rider}</button> : p.rider) },
     { key: 'm', header: 'M-Pesa number', render: (p) => mask(riders.find((r) => r.id === p.riderId)?.phone ?? '') },
     { key: 'a', header: 'Net payout', sort: (a, b) => a.amount - b.amount, render: (p) => <b>{kes(p.amount)}</b> },
     { key: 'req', header: 'Requested', sort: (a, b) => a.requestedAt - b.requestedAt, render: (p) => dateTime(p.requestedAt) },

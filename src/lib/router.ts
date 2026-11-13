@@ -16,9 +16,22 @@ export function useQuery(): URLSearchParams {
   return new URLSearchParams(q)
 }
 
+/** Forms with unsaved changes register a check here, and the app asks before leaving them. */
+let guard: (() => boolean) | null = null
+let leavePrompt: ((proceed: () => void) => void) | null = null
+export const setNavGuard = (g: (() => boolean) | null) => { guard = g }
+export const setLeavePrompt = (p: ((proceed: () => void) => void) | null) => { leavePrompt = p }
+
 export function navigate(path: string) {
-  if (raw() === path) window.scrollTo({ top: 0 })
-  else window.location.hash = path
+  const go = () => {
+    if (raw() === path) window.scrollTo({ top: 0 })
+    else window.location.hash = path
+  }
+  if (raw() !== path && guard && leavePrompt && guard()) {
+    leavePrompt(() => { guard = null; go() })
+    return
+  }
+  go()
 }
 
 export interface NavItem {
@@ -28,7 +41,7 @@ export interface NavItem {
   /** Paths (prefixes) under which this item is highlighted. */
   match: (path: string) => boolean
   /** A live count shown beside the label. */
-  badge?: 'tickets' | 'chats'
+  badge?: 'tickets' | 'chats' | 'alerts'
 }
 
 export const NAV_GROUPS: { label: string; items: NavItem[] }[] = [
@@ -59,6 +72,36 @@ export const NAV_GROUPS: { label: string; items: NavItem[] }[] = [
     ],
   },
   {
+    label: 'CAMPAIGNS',
+    items: [
+      { label: 'Marketing overview', icon: '▦', path: '/marketing', match: (p) => p === '/marketing' },
+      { label: 'Coupons list', icon: '%', path: '/marketing/coupons', match: (p) => p === '/marketing/coupons' || p.startsWith('/marketing/coupons/') },
+      { label: 'Flash sales', icon: 'ϟ', path: '/marketing/flash', match: (p) => p === '/marketing/flash' },
+      { label: 'Promotions and bundles', icon: '◇', path: '/marketing/bundles', match: (p) => p === '/marketing/bundles' },
+      { label: 'Campaign analytics', icon: '▥', path: '/marketing/analytics', match: (p) => p === '/marketing/analytics' || p.startsWith('/marketing/analytics/') },
+    ],
+  },
+  {
+    label: 'CUSTOMER ENGAGEMENT',
+    items: [
+      { label: 'Push notifications', icon: '↗', path: '/marketing/push', match: (p) => p === '/marketing/push' },
+      { label: 'SMS and email campaigns', icon: '✉', path: '/marketing/messages', match: (p) => p === '/marketing/messages' },
+      { label: 'Audience segments', icon: '◎', path: '/marketing/segments', match: (p) => p === '/marketing/segments' },
+      { label: 'Loyalty points rules', icon: '✧', path: '/marketing/loyalty', match: (p) => p === '/marketing/loyalty' },
+      { label: 'Referral program settings', icon: '⇄', path: '/marketing/referrals', match: (p) => p === '/marketing/referrals' },
+      { label: 'Reviews highlights', icon: '☆', path: '/marketing/highlights', match: (p) => p === '/marketing/highlights' },
+    ],
+  },
+  {
+    label: 'CONTENT',
+    items: [
+      { label: 'Banners manager', icon: '▧', path: '/marketing/banners', match: (p) => p === '/marketing/banners' },
+      { label: 'Homepage layout builder', icon: '▤', path: '/marketing/homepage', match: (p) => p === '/marketing/homepage' },
+      { label: 'Content pages editor', icon: '¶', path: '/marketing/pages', match: (p) => p === '/marketing/pages' },
+      { label: 'Category and landing page content', icon: '▣', path: '/marketing/categories', match: (p) => p === '/marketing/categories' },
+    ],
+  },
+  {
     label: 'DISPATCH',
     items: [
       { label: 'Dispatch overview', icon: '◎', path: '/dispatch', match: (p) => p === '/dispatch' },
@@ -73,8 +116,43 @@ export const NAV_GROUPS: { label: string; items: NavItem[] }[] = [
     label: 'COMMERCE',
     items: [
       { label: 'Orders', icon: '▣', path: '/orders', match: (p) => p === '/orders' || p.startsWith('/orders/') },
-      { label: 'Products', icon: '◈', path: '/products', match: (p) => p === '/products' || p.startsWith('/products/') },
-      { label: 'Categories and stock', icon: '▥', path: '/inventory', match: (p) => p === '/inventory' },
+    ],
+  },
+  {
+    label: 'INVENTORY',
+    items: [
+      { label: 'Inventory overview', icon: '▦', path: '/stock', match: (p) => p === '/stock' },
+      { label: 'Products', icon: '▧', path: '/products', match: (p) => p === '/products' || p.startsWith('/products/') },
+      { label: 'Categories and subcategories', icon: '☷', path: '/inventory/categories', match: (p) => p === '/inventory/categories' || p === '/inventory' },
+      { label: 'Brands', icon: '◈', path: '/inventory/brands', match: (p) => p === '/inventory/brands' },
+      { label: 'Stock levels by warehouse', icon: '▥', path: '/inventory/levels', match: (p) => p === '/inventory/levels' },
+      { label: 'Low-stock alerts and reorder settings', icon: '!', path: '/inventory/alerts', match: (p) => p === '/inventory/alerts', badge: 'alerts' },
+    ],
+  },
+  {
+    label: 'PURCHASING',
+    items: [
+      { label: 'Purchase orders list', icon: '▤', path: '/purchasing', match: (p) => p === '/purchasing' || (p.startsWith('/purchasing/') && !p.startsWith('/purchasing/new') && !p.startsWith('/purchasing/receive') && !p.startsWith('/purchasing/suppliers')) },
+      { label: 'Create purchase order', icon: '＋', path: '/purchasing/new', match: (p) => p === '/purchasing/new' },
+      { label: 'Receive stock', icon: '↓', path: '/purchasing/receive', match: (p) => p === '/purchasing/receive' || p.startsWith('/purchasing/receive/') },
+      { label: 'Suppliers list and detail', icon: '♙', path: '/purchasing/suppliers', match: (p) => p === '/purchasing/suppliers' || p.startsWith('/purchasing/suppliers/') },
+    ],
+  },
+  {
+    label: 'FULFILMENT',
+    items: [
+      { label: 'Order packing queue', icon: '□', path: '/inventory/packing', match: (p) => p === '/inventory/packing' },
+      { label: 'Returns restock', icon: '↶', path: '/inventory/returns', match: (p) => p === '/inventory/returns' || p.startsWith('/inventory/returns/') },
+      { label: 'Stock take / cycle count', icon: '✓', path: '/inventory/counts', match: (p) => p === '/inventory/counts' },
+    ],
+  },
+  {
+    label: 'STOCK TOOLS',
+    items: [
+      { label: 'Stock movement history', icon: '⇄', path: '/inventory/movements', match: (p) => p === '/inventory/movements' },
+      { label: 'Stock adjustment', icon: '±', path: '/inventory/adjust', match: (p) => p === '/inventory/adjust' },
+      { label: 'Bulk import and export', icon: '⇅', path: '/inventory/import', match: (p) => p === '/inventory/import' },
+      { label: 'Barcode and label printing', icon: '▥', path: '/inventory/labels', match: (p) => p === '/inventory/labels' },
     ],
   },
   {
@@ -174,56 +252,83 @@ export const NAV_GROUPS: { label: string; items: NavItem[] }[] = [
     items: [
       { label: 'Integrations and API keys', icon: '⌘', path: '/integrations', match: (p) => p === '/integrations' },
       { label: 'Backup and system health', icon: '◷', path: '/health', match: (p) => p === '/health' },
+      { label: 'System states', icon: '◌', path: '/system/states', match: (p) => p === '/system/states' },
     ],
   },
 ]
 
 const ALL = NAV_GROUPS.flatMap((g) => g.items.map((i) => i.label))
 
-/** Legacy pages (from the first design) each role can open. Newer pages follow the permission matrix instead. */
-const LEGACY: Record<string, ReadonlySet<string>> = {
-  'Owner admin': new Set(ALL),
-  'Operations manager': new Set(['Executive overview', 'Staff list', 'Add/edit staff', 'Customers list', 'Customer detail', 'Delivery settings', 'Notification templates', 'Backup and system health']),
-  'IT support': new Set(['Executive overview', 'Staff list', 'Add/edit staff', 'Roles and permissions matrix', 'Audit log', 'Integrations and API keys', 'Backup and system health']),
-  'Dispatch manager': new Set(['Executive overview', 'Customers list', 'Customer detail', 'Delivery settings', 'Notification templates']),
-  'Finance analyst': new Set(['Executive overview', 'Customers list', 'Customer detail', 'Business settings', 'Payment gateway settings', 'Audit log', 'Backup and system health']),
-  'Customer support': new Set(['Executive overview', 'Customers list', 'Customer detail', 'Notification templates']),
-  'Rider manager': new Set(['Executive overview', 'Staff list', 'Delivery settings']),
-}
-
-/** The permission-matrix module a newer page belongs to. */
+/** The one permission area each page belongs to. If a role doesn’t have the area, the page and its links are hidden. */
 export const PAGE_MODULE: Record<string, string> = {
-  'Dispatch overview': 'Orders', 'Order queue': 'Orders', 'Assign rider': 'Orders', 'Live order detail': 'Orders', 'Reassign order': 'Orders', 'Delayed and stuck orders': 'Orders',
-  'Cancelled and failed deliveries': 'Orders', Orders: 'Orders', Products: 'Products', 'Categories and stock': 'Products',
-  'Riders list': 'Riders', 'Rider detail': 'Riders', 'Rider application review': 'Riders', 'Delivery zones': 'Riders', 'Rider shifts and capacity': 'Riders', 'Incidents and SOS alerts': 'Riders',
-  Payments: 'Payments', 'Rider payouts': 'Payments',
-  'Finance overview': 'Payments', 'Failed payments and retries': 'Payments', Reconciliation: 'Payments', 'Refunds ledger': 'Payments', 'Taxes and VAT report': 'Payments', 'Profit and loss summary': 'Payments', 'Accounts and ledger': 'Payments',
-  'COD management': 'Payments', 'Record COD deposit': 'Payments', 'Payout batch': 'Payments', 'Rider earnings statements': 'Payments', 'Store settlements': 'Payments',
-  'Invoices list': 'Payments', 'Sales reports': 'Payments', 'Delivery cost report': 'Payments', 'Expense tracking': 'Payments', 'Export center': 'Payments', 'Financial period close': 'Payments', 'Finance settings': 'Payments',
-  'Payroll runs': 'Payroll', 'Employee pay profiles': 'Payroll', 'Statutory remittances': 'Payroll', Reports: 'Reports',
-  'Tickets inbox': 'Support', 'Live chat console': 'Support', 'Rider support tickets': 'Support', Disputes: 'Support', 'Refund requests': 'Support', 'Returns requests': 'Support', 'Customer lookup': 'Support',
-  'Reviews and complaints moderation': 'Support', 'Knowledge base and FAQ editor': 'Support', 'Canned responses manager': 'Support',
+  // orders and dispatch
+  'Dispatch overview': 'Dispatch', 'Order queue': 'Dispatch', 'Assign rider': 'Dispatch', 'Live order detail': 'Dispatch', 'Reassign order': 'Dispatch', 'Delayed and stuck orders': 'Dispatch', 'Cancelled and failed deliveries': 'Dispatch', Orders: 'Orders',
+  // catalogue and stock
+  'Order packing queue': 'Orders', 'Returns restock': 'Orders',
+  Products: 'Products', 'Categories and subcategories': 'Products', Brands: 'Products', 'Bulk import and export': 'Products',
+  'Inventory overview': 'Inventory', 'Stock levels by warehouse': 'Inventory', 'Low-stock alerts and reorder settings': 'Inventory', 'Stock take / cycle count': 'Inventory',
+  'Stock movement history': 'Inventory', 'Stock adjustment': 'Inventory', 'Barcode and label printing': 'Inventory', 'Receive stock': 'Inventory',
+  'Purchase orders list': 'Purchasing', 'Create purchase order': 'Purchasing', 'Suppliers list and detail': 'Purchasing',
+  // riders
+  'Riders list': 'Riders', 'Rider detail': 'Riders', 'Rider application review': 'Riders', 'Delivery zones': 'Riders', 'Rider shifts and capacity': 'Riders', 'Incidents and SOS alerts': 'Riders', 'Delivery settings': 'Riders',
+  // money
+  Payments: 'Payments', 'Rider payouts': 'Payments', 'Finance overview': 'Payments', 'Failed payments and retries': 'Payments', Reconciliation: 'Payments', 'Refunds ledger': 'Payments', 'Taxes and VAT report': 'Payments', 'Profit and loss summary': 'Payments',
+  'Accounts and ledger': 'Payments', 'COD management': 'Payments', 'Record COD deposit': 'Payments', 'Payout batch': 'Payments', 'Rider earnings statements': 'Payments', 'Store settlements': 'Payments', 'Invoices list': 'Payments',
+  'Sales reports': 'Payments', 'Delivery cost report': 'Payments', 'Expense tracking': 'Payments', 'Export center': 'Payments', 'Financial period close': 'Payments', 'Finance settings': 'Payments', 'Payment gateway settings': 'Payments',
+  'Payroll runs': 'Payroll', 'Employee pay profiles': 'Payroll', 'Statutory remittances': 'Payroll',
+  Reports: 'Reports',
+  // customer care
+  'Tickets inbox': 'Support', 'Live chat console': 'Support', 'Rider support tickets': 'Support', 'Customer lookup': 'Support', 'Reviews and complaints moderation': 'Support', 'Knowledge base and FAQ editor': 'Support', 'Canned responses manager': 'Support',
+  'Refund requests': 'Claims', 'Returns requests': 'Claims', Disputes: 'Claims',
+  'Customers list': 'Customers', 'Customer detail': 'Customers',
+  // marketing
+  'Marketing overview': 'Marketing', 'Coupons list': 'Marketing', 'Flash sales': 'Marketing', 'Promotions and bundles': 'Marketing', 'Campaign analytics': 'Marketing', 'Push notifications': 'Marketing', 'SMS and email campaigns': 'Marketing',
+  'Audience segments': 'Marketing', 'Loyalty points rules': 'Marketing', 'Referral program settings': 'Marketing', 'Reviews highlights': 'Marketing', 'Banners manager': 'Marketing', 'Homepage layout builder': 'Marketing', 'Content pages editor': 'Marketing',
+  'Category and landing page content': 'Marketing', 'Notification templates': 'Marketing',
+  // people, access and system
+  'Staff list': 'Staff', 'Add/edit staff': 'Staff', 'Roles and permissions matrix': 'Access', 'Audit log': 'Access', 'Integrations and API keys': 'System', 'System states': 'System', 'Backup and system health': 'System', 'Business settings': 'Settings',
 }
 
 /** Customer support only sees the monitoring side of dispatch (not assignment or rider management). */
 const SUPPORT_DISPATCH = new Set(['Dispatch overview', 'Live order detail', 'Delayed and stuck orders', 'Cancelled and failed deliveries', 'Incidents and SOS alerts'])
 const DISPATCH_PAGES = new Set(['Dispatch overview', 'Order queue', 'Assign rider', 'Live order detail', 'Reassign order', 'Delayed and stuck orders', 'Cancelled and failed deliveries', 'Incidents and SOS alerts'])
 
-/** Can this role open the page? `perms` is that role's row of the permission matrix. */
+/** Can this role open the page? `perms` is that role’s row of the permission matrix. */
 export function canOpen(role: string, label: string, perms: Record<string, boolean[]> | undefined): boolean {
+  if (label === 'Executive overview') return true
   if (role === 'Owner admin') return true
-  if (role === 'Customer support' && DISPATCH_PAGES.has(label)) return SUPPORT_DISPATCH.has(label)
+  if (role === 'Customer support' && label === 'Incidents and SOS alerts') return true
+  if (role === 'Customer support' && DISPATCH_PAGES.has(label)) return SUPPORT_DISPATCH.has(label) && !!perms?.Dispatch?.[0]
   const mod = PAGE_MODULE[label]
-  if (mod) return !!perms?.[mod]?.[0]
-  return LEGACY[role]?.has(label) ?? false
+  return mod ? !!perms?.[mod]?.[0] : false
 }
 
-export const ROLE_PAGE_COUNT = (role: string, perms: Record<string, boolean[]> | undefined) => ALL.filter((l) => canOpen(role, l, perms)).length
+export const ROLE_PAGE_COUNT = (role: string, perms: Record<string, boolean[]> | undefined) => ALL.filter((l) => l !== 'Executive overview' && canOpen(role, l, perms)).length
 
 export const pageFor = (path: string) => NAV_GROUPS.flatMap((g) => g.items).find((i) => i.match(path))
 
+/** Where each department lands, and what that page is called. Everyone else with the Overview permission sees the company overview. */
+export function homeOf(role: string, perms: Record<string, boolean[]> | undefined): { path: string; label: string } {
+  if (role === 'Owner admin' || perms?.Overview?.[0]) return { path: '/', label: 'Executive overview' }
+  switch (role) {
+    case 'IT support': return { path: '/', label: 'System overview' }
+    case 'Customer support': return { path: '/', label: 'Support overview' }
+    case 'Marketing manager': return { path: '/marketing', label: 'Marketing overview' }
+    case 'Finance analyst': return { path: '/finance', label: 'Finance overview' }
+    case 'Dispatch manager': return { path: '/dispatch', label: 'Dispatch overview' }
+    case 'Rider manager': return { path: '/riders', label: 'Riders list' }
+    case 'Inventory manager': case 'Warehouse lead': case 'Purchasing agent': return { path: '/stock', label: 'Inventory overview' }
+    default: return { path: '/', label: 'Home' }
+  }
+}
+
 /** The home page is a different page for different people, so its name changes with the role. */
 export function displayLabel(label: string, role: string, perms: Record<string, boolean[]> | undefined): string {
-  if (label !== 'Executive overview' || role === 'Owner admin' || perms?.Overview?.[0]) return label
-  return role === 'IT support' ? 'System overview' : 'Support overview'
+  return label === 'Executive overview' ? homeOf(role, perms).label : label
+}
+
+/** The roles that can open a page, so a blocked person knows who to ask. */
+export function rolesWith(label: string, all: Record<string, Record<string, boolean[]>>): string[] {
+  const mod = PAGE_MODULE[label]
+  return Object.keys(all).filter((r) => r === 'Owner admin' || (mod ? !!all[r]?.[mod]?.[0] : false))
 }

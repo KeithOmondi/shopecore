@@ -132,7 +132,7 @@ export function OrderQueue() {
   const [tab, setTab] = useState<'All' | 'New' | 'Waiting'>('All')
   const [zone, setZone] = useState('All zones')
   const unassigned = orders.filter(isUnassigned)
-  const edit = can('Orders', 'Edit')
+  const edit = can('Dispatch', 'Edit')
 
   const rows = unassigned.filter((o) => (zone === 'All zones' || zoneOf(pickupArea(o)) === zone) && (tab === 'All' || queueStatus(o, now) === tab))
 
@@ -244,7 +244,7 @@ function RiderChoice({ order, mode, sort = 'Recommended match' }: { order: Order
       <div className="form-actions" style={{ marginTop: 10 }}>
         {mode === 'reassign' && <div style={{ flex: 1 }}><Field label="Reason for reassignment" value={reason} onChange={setReason} options={['Rider requested assistance', 'Vehicle issue', 'Order delay', 'Other']} /></div>}
         <Btn onClick={() => navigate(mode === 'assign' ? '/dispatch/queue' : `/dispatch/live/${order.id}`)}>Cancel</Btn>
-        <Btn variant="primary" disabled={!chosen || !can('Orders', 'Edit')} onClick={confirm}>{mode === 'assign' ? `Assign ${chosen?.rider.name ?? 'rider'}` : 'Confirm reassignment'}</Btn>
+        <Btn variant="primary" disabled={!chosen || !can('Dispatch', 'Edit')} onClick={confirm}>{mode === 'assign' ? `Assign ${chosen?.rider.name ?? 'rider'}` : 'Confirm reassignment'}</Btn>
       </div>
     </>
   )
@@ -399,7 +399,7 @@ export function LiveOrder({ id }: { id?: string }) {
         desc={`Order ${order.id} · Placed ${dateTime(order.placedAt)}`}
         actions={
           <>
-            <Btn disabled={!rider || !can('Orders', 'Edit')} onClick={() => navigate(`/dispatch/reassign/${order.id}`)}>Reassign rider</Btn>
+            <Btn disabled={!rider || !can('Dispatch', 'Edit')} onClick={() => navigate(`/dispatch/reassign/${order.id}`)}>Reassign rider</Btn>
             <Btn
               variant="primary"
               onClick={() =>
@@ -408,8 +408,8 @@ export function LiveOrder({ id }: { id?: string }) {
                   body: (
                     <>
                       <SettingRow title="Open order record" sub="Items, payment and notes" right={<Btn small onClick={() => { closeDrawer(); navigate(`/orders/${order.id}`) }}>Open</Btn>} />
-                      {out && <SettingRow title="Mark as delivered" sub="After the rider confirms the handover" right={<Btn small disabled={!can('Orders', 'Edit')} onClick={() => { closeDrawer(); markDelivered() }}>Mark</Btn>} />}
-                      {order.alert && <SettingRow title="Clear alert" sub={order.alert.reason} right={<Btn small disabled={!can('Orders', 'Edit')} onClick={() => { setOrders(orders.map((o) => (o.id === order.id ? { ...o, alert: undefined } : o))); closeDrawer(); toast('Alert cleared') }}>Clear</Btn>} />}
+                      {out && <SettingRow title="Mark as delivered" sub="After the rider confirms the handover" right={<Btn small disabled={!can('Dispatch', 'Edit')} onClick={() => { closeDrawer(); markDelivered() }}>Mark</Btn>} />}
+                      {order.alert && <SettingRow title="Clear alert" sub={order.alert.reason} right={<Btn small disabled={!can('Dispatch', 'Edit')} onClick={() => { setOrders(orders.map((o) => (o.id === order.id ? { ...o, alert: undefined } : o))); closeDrawer(); toast('Alert cleared') }}>Clear</Btn>} />}
                     </>
                   ),
                 })
@@ -494,8 +494,8 @@ export function DelayedOrders() {
           <SettingRow title="Route" sub={`${o.pickup} → ${o.address}`} />
           <div className="actions" style={{ marginTop: 16 }}>
             <Btn onClick={() => { closeDrawer(); navigate(`/dispatch/live/${o.id}`) }}>Track live</Btn>
-            <Btn disabled={!o.riderId || !can('Orders', 'Edit')} onClick={() => { closeDrawer(); navigate(`/dispatch/reassign/${o.id}`) }}>Reassign</Btn>
-            <Btn variant="primary" disabled={!can('Orders', 'Edit')} onClick={() => { setOrders(orders.map((x) => (x.id === o.id ? { ...x, alert: undefined } : x))); log(`Resolved delay alert · ${o.id}`, 'Orders'); closeDrawer(); toast('Alert resolved') }}>Mark resolved</Btn>
+            <Btn disabled={!o.riderId || !can('Dispatch', 'Edit')} onClick={() => { closeDrawer(); navigate(`/dispatch/reassign/${o.id}`) }}>Reassign</Btn>
+            <Btn variant="primary" disabled={!can('Dispatch', 'Edit')} onClick={() => { setOrders(orders.map((x) => (x.id === o.id ? { ...x, alert: undefined } : x))); log(`Resolved delay alert · ${o.id}`, 'Orders'); closeDrawer(); toast('Alert resolved') }}>Mark resolved</Btn>
           </div>
         </>
       ),

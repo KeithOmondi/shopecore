@@ -2,7 +2,12 @@ import { useState } from 'react'
 
 import { AvatarTile, Badge, Btn, downloadCsv, PageHead, Panel, Stat } from '../components/ui'
 import { OVERVIEW, TOP_AREAS, TOP_PRODUCTS, type Range } from '../data/seed'
-import { navigate } from '../lib/router'
+import { canOpen, homeOf, NAV_GROUPS, navigate } from '../lib/router'
+import { DispatchOverview } from './Dispatch'
+import { FinanceOverview } from './FinanceCore'
+import { InventoryOverview } from './InventoryStock'
+import { MarketingOverview } from './MarketingCampaigns'
+import { RidersList } from './Riders'
 import { SupportOverview } from './Support'
 import { useStore } from '../lib/store'
 
@@ -52,14 +57,44 @@ function SystemHome() {
   )
 }
 
+/** A role without its own home page gets a short list of everything it can open. */
+function Landing() {
+  const { role, permissions, user } = useStore()
+  const groups = NAV_GROUPS.map((g) => ({ label: g.label, items: g.items.filter((i) => i.label !== 'Executive overview' && canOpen(role, i.label, permissions[role])) })).filter((g) => g.items.length)
+  return (
+    <>
+      <PageHead title="Home" desc={`Welcome, ${user?.name.split(' ')[0] ?? 'there'}. Here is everything your role can open.`} />
+      {groups.length === 0 && <Panel><p className="panel-sub">Your role doesn’t have access to any pages yet. Ask an owner to update it.</p></Panel>}
+      <div className="grid" style={{ gridTemplateColumns: 'repeat(auto-fill,minmax(240px,1fr))' }}>
+        {groups.map((g) => (
+          <Panel key={g.label} title={g.label}>
+            {g.items.map((i) => <div className="list-row" key={i.label}><b style={{ fontSize: 11 }}>{i.label}</b><Btn small onClick={() => navigate(i.path)}>Open</Btn></div>)}
+          </Panel>
+        ))}
+      </div>
+    </>
+  )
+}
+
+/** The home page: the company overview for owners and operations, and each department’s own page for everyone else. */
 export default function Overview() {
-  const { can, role } = useStore()
+  const { can, role, permissions } = useStore()
   if (can('Overview', 'View')) return <BusinessOverview />
-  return role === 'IT support' ? <SystemHome /> : <SupportOverview />
+  switch (homeOf(role, permissions[role]).path) {
+    case '/marketing': return <MarketingOverview />
+    case '/finance': return <FinanceOverview />
+    case '/dispatch': return <DispatchOverview />
+    case '/riders': return <RidersList />
+    case '/stock': return <InventoryOverview />
+    default:
+      if (role === 'IT support') return <SystemHome />
+      if (role === 'Customer support') return <SupportOverview />
+      return <Landing />
+  }
 }
 
 function BusinessOverview() {
-  const { audit, toast } = useStore()
+  const { audit, toast, can } = useStore()
   const [range, setRange] = useState<Range>('Last 30 days')
   const d = OVERVIEW[range]
   const total = d.statuses.reduce((n, s) => n + s[2], 0)
@@ -134,20 +169,22 @@ function BusinessOverview() {
         </Panel>
       </div>
 
-      <Panel title="Recent activity" sub="Latest changes across your workspace" right={<Btn small onClick={() => navigate('/audit')}>View audit log</Btn>}>
-        {audit.slice(0, 3).map((a) => (
-          <div className="list-row" key={a.id}>
-            <div className="list-main">
-              <AvatarTile text={a.user === 'System' ? 'SY' : a.user.split(' ').map((p) => p[0]).join('').slice(0, 2)} />
-              <span>
-                <strong>{a.user} <span style={{ fontWeight: 400, color: 'var(--muted)' }}>{a.action.toLowerCase()}</span></strong>
-                <small>{a.module} · {a.when}</small>
-              </span>
+      {can('Access', 'View') && (
+        <Panel title="Recent activity" sub="Latest changes across your workspace" right={<Btn small onClick={() => navigate('/audit')}>View audit log</Btn>}>
+          {audit.slice(0, 3).map((a) => (
+            <div className="list-row" key={a.id}>
+              <div className="list-main">
+                <AvatarTile text={a.user === 'System' ? 'SY' : a.user.split(' ').map((p) => p[0]).join('').slice(0, 2)} />
+                <span>
+                  <strong>{a.user} <span style={{ fontWeight: 400, color: 'var(--muted)' }}>{a.action.toLowerCase()}</span></strong>
+                  <small>{a.module} · {a.when}</small>
+                </span>
+              </div>
+              <Badge>{a.type}</Badge>
             </div>
-            <Badge>{a.type}</Badge>
-          </div>
-        ))}
-      </Panel>
+          ))}
+        </Panel>
+        )}
     </>
   )
 }

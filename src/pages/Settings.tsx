@@ -3,11 +3,13 @@ import { useState } from 'react'
 import { Badge, Btn, Field, Notice, PageHead, Panel, SettingRow, Toggle } from '../components/ui'
 import { kes, MINIMUM_BASKET, type Zone } from '../data/seed'
 import { useStore } from '../lib/store'
+import { useUnsavedGuard } from '../lib/unsaved'
 
 type Errors = Record<string, string>
 const num = (v: string) => (/^\d+(\.\d+)?$/.test(v.trim()) ? Number(v) : NaN)
 
 function FormShell({ title, children, onSave, onDiscard, dirty }: { title: string; children: React.ReactNode; onSave: () => void; onDiscard: () => void; dirty: boolean }) {
+  useUnsavedGuard(dirty)
   return (
     <section className="card form-card">
       <h2>{title}</h2>

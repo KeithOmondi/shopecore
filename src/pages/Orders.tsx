@@ -75,6 +75,9 @@ export function OrdersList() {
         rowKey={(o) => o.id}
         columns={columns}
         searchLabel="Search orders"
+        emptyTitle="No orders yet"
+        empty="New orders from the ShopCore app appear here. You can also create one by hand."
+        emptyAction={can('Orders', 'Create') ? { label: 'Create an order', onClick: () => navigate('/orders/new') } : undefined}
         searchText={(o) => `${o.id} ${o.customer} ${o.area} ${o.method}`}
         tools={
           <select className="select" aria-label="Payment method" value={method} onChange={(e) => setMethod(e.target.value)}>
@@ -235,7 +238,7 @@ export function OrderDetail({ id }: { id: string }) {
                 <tbody>
                   {order.items.map((i) => (
                     <tr key={i.productId}>
-                      <td><button className="link-btn" onClick={() => navigate(`/products/${i.productId}`)}>{i.name}</button></td>
+                      <td>{can('Products', 'View') ? <button className="link-btn" onClick={() => navigate(`/products/${i.productId}`)}>{i.name}</button> : i.name}</td>
                       <td>{i.qty}</td><td>{kes(i.price)}</td><td><b>{kes(i.price * i.qty)}</b></td>
                     </tr>
                   ))}
@@ -268,7 +271,7 @@ export function OrderDetail({ id }: { id: string }) {
 
         <div className="grid">
           <OrderSupport order={order} />
-          <Panel title="Customer" right={customer && <Btn small onClick={() => navigate(`/customers/${customer.id}`)}>Profile</Btn>}>
+          <Panel title="Customer" right={customer && can('Customers', 'View') && <Btn small onClick={() => navigate(`/customers/${customer.id}`)}>Profile</Btn>}>
             <div className="prod-name">{order.customer}</div>
             <div className="subtext" style={{ marginBottom: 8 }}>{customer?.phone} · {customer?.email}</div>
             <SettingRow title="Delivery address" sub={order.address} />
@@ -282,7 +285,7 @@ export function OrderDetail({ id }: { id: string }) {
             {rider ? (
               <div className="list-row" style={{ paddingTop: 0 }}>
                 <span><strong style={{ fontSize: 11, display: 'block' }}>{rider.name}</strong><small className="panel-sub">{rider.vehicle} · {rider.plate}</small></span>
-                <Btn small onClick={() => navigate(`/riders/${rider.id}`)}>View</Btn>
+                {can('Riders', 'View') && <Btn small onClick={() => navigate(`/riders/${rider.id}`)}>View</Btn>}
               </div>
             ) : (
               <div className="panel-sub" style={{ marginBottom: 8 }}>No rider assigned yet.</div>

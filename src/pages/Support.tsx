@@ -375,7 +375,7 @@ export function TicketDetail({ id }: { id: string }) {
             </Panel>
           )}
           {rider && (
-            <Panel title="Rider" right={<Btn small onClick={() => navigate(`/riders/${rider.id}`)}>Profile</Btn>}>
+            <Panel title="Rider" right={can('Riders', 'View') && <Btn small onClick={() => navigate(`/riders/${rider.id}`)}>Profile</Btn>}>
               <div className="sp-row" style={{ marginBottom: 6 }}><Person name={rider.name} size={44} /><div><b style={{ fontSize: 14 }}>{rider.name}</b><div className="panel-sub">{rider.vehicle} · {rider.zone}</div></div></div>
               <Detail label="Phone">{rider.phone}</Detail>
               <Detail label="Status">{rider.status}</Detail>

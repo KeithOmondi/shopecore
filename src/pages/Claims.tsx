@@ -93,7 +93,7 @@ export function RefundReview({ id }: { id: string }) {
   const [note, setNote] = useState('')
   if (!refund || !order0) return <NotFoundCard what="Refund request" back="Back to requests" onBack={() => navigate('/support/refunds')} />
   const order = order0
-  const edit = can('Support', 'Edit')
+  const edit = can('Claims', 'Edit')
   const customer = customers.find((c) => c.id === refund.customerId)
   const open = refund.status === 'Needs review'
   const max = order.total - order.refunded
@@ -254,7 +254,7 @@ export function ReturnDetail({ id }: { id: string }) {
   const [shot, setShot] = useState(1)
   const [error, setError] = useState('')
   if (!ret) return <NotFoundCard what="Return request" back="Back to returns" onBack={() => navigate('/support/returns')} />
-  const edit = can('Support', 'Edit')
+  const edit = can('Claims', 'Edit')
   const done = ret.status === 'Approved' || ret.status === 'Rejected'
   const order = orders.find((o) => o.id === ret.orderId)
   const rider = riders.find((r) => r.id === order?.riderId)
@@ -365,7 +365,7 @@ export function Disputes({ id }: { id?: string }) {
   const d = disputes.find((x) => x.id === id) ?? sorted[0]
   const [noteErr, setNoteErr] = useState('')
   if (!d) return (<><PageHead title="Disputes" desc="Review delivery disputes with customer and rider evidence side by side." /><Notice mark="✓" tone="success">No disputes at the moment.</Notice></>)
-  const edit = can('Support', 'Edit')
+  const edit = can('Claims', 'Edit')
   const closed = d.status.startsWith('Resolved')
   const left = d.slaDueAt - now
   const tickets = open.length
@@ -452,7 +452,7 @@ export function CustomerLookup() {
     ? customers.filter((c) => `${c.name} ${c.phone} ${c.email} ${c.id}`.toLowerCase().includes(needle) || orders.some((o) => o.customerId === c.id && o.id.toLowerCase() === needle))
     : []
   const c = customers.find((x) => x.id === (picked ?? (needle ? matches[0]?.id : wanted)))
-  const edit = can('Support', 'Edit')
+  const edit = can('Claims', 'Edit')
   const mine = c ? orders.filter((o) => o.customerId === c.id).sort((a, b) => b.placedAt - a.placedAt) : []
   const myTickets = c ? tickets.filter((t) => t.personId === c.id) : []
   const myRefunds = c ? refunds.filter((r) => r.customerId === c.id) : []

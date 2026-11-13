@@ -1,6 +1,8 @@
 import { useState } from 'react'
 
-import { AvatarTile, Badge, Btn, DataTable, downloadCsv, Field, Notice, PageHead, Panel, SettingRow, Stat, Tabs, type Column } from '../components/ui'
+import { useInventory } from '../lib/inventory'
+import { useDirty, useUnsavedGuard } from '../lib/unsaved'
+import { AvatarTile, Badge, Btn, DataTable, downloadCsv, Field, Notice, PageHead, Panel, SettingRow, Stat, type Column } from '../components/ui'
 import type { Product, ProductStatus } from '../data/commerce'
 import { kes, shortDate } from '../lib/format'
 import { navigate } from '../lib/router'
@@ -11,6 +13,7 @@ const statusTone = (s: ProductStatus) => (s === 'Active' ? 'green' : s === 'Draf
 
 export function ProductsList() {
   const { products, setProducts, categories, can, openModal, toast, log, orders } = useStore()
+  const inv = useInventory()
   const [category, setCategory] = useState('All categories')
   const [status, setStatus] = useState('All statuses')
 
@@ -32,7 +35,8 @@ export function ProductsList() {
         </div>
       ),
     },
-    { key: 'category', header: 'Category', sort: (a, b) => a.category.localeCompare(b.category), render: (p) => p.category },
+    { key: 'category', header: 'Category', sort: (a, b) => a.category.localeCompare(b.category), render: (p) => <>{p.category}{inv.meta(p).subcategory && <span className="subtext">{inv.meta(p).subcategory}</span>}</> },
+    { key: 'brand', header: 'Brand', render: (p) => inv.brands.find((b) => b.id === inv.meta(p).brandId)?.name ?? '—' },
     { key: 'price', header: 'Price', sort: (a, b) => a.price - b.price, render: (p) => <b>{kes(p.price)}</b> },
     { key: 'stock', header: 'Stock', sort: (a, b) => a.stock - b.stock, render: stockBadge },
     { key: 'sold', header: 'Sold (30d)', sort: (a, b) => sold(a.id) - sold(b.id), render: (p) => sold(p.id) },
@@ -46,6 +50,7 @@ export function ProductsList() {
         desc="Manage your catalogue, prices and availability."
         actions={
           <>
+            <Btn onClick={() => navigate('/inventory/import')}>Import / export</Btn>
             <Btn disabled={!can('Products', 'Export')} onClick={() => { downloadCsv('products.csv', ['SKU', 'Name', 'Category', 'Price (KES)', 'Stock', 'Status'], rows.map((p) => [p.sku, p.name, p.category, p.price, p.stock, p.status])); toast('Products exported') }}>Export</Btn>
             <Btn variant="primary" disabled={!can('Products', 'Create')} onClick={() => navigate('/products/new')}>Add product</Btn>
           </>
@@ -63,6 +68,9 @@ export function ProductsList() {
         rowKey={(p) => p.id}
         columns={columns}
         searchLabel="Search products"
+        emptyTitle="No products yet"
+        empty="Add your first product, or import a CSV to bring in many at once."
+        emptyAction={can('Products', 'Create') ? { label: 'Add a product', onClick: () => navigate('/products/new') } : undefined}
         searchText={(p) => `${p.name} ${p.sku} ${p.category}`}
         tools={
           <>
@@ -98,11 +106,16 @@ export function ProductsList() {
 
 export function ProductForm({ id }: { id?: string }) {
   const { products, setProducts, categories, can, openModal, toast, log } = useStore()
+  const inv = useInventory()
   const existing = id ? products.find((p) => p.id === id) : undefined
+  const m0 = existing ? inv.meta(existing) : undefined
   const [f, setF] = useState(() => ({
     name: existing?.name ?? '', sku: existing?.sku ?? '', category: existing?.category ?? categories[0]!, price: String(existing?.price ?? ''), stock: String(existing?.stock ?? '0'),
     reorderAt: String(existing?.reorderAt ?? 10), status: (existing?.status ?? 'Draft') as ProductStatus, description: existing?.description ?? '',
   }))
+  const [x, setX] = useState(() => ({ brandId: m0?.brandId ?? '', supplierId: m0?.supplierId ?? '', cost: String(m0?.cost ?? ''), barcode: m0?.barcode ?? '', tax: m0?.tax ?? 'Standard VAT', track: m0?.track ?? true, subcategory: m0?.subcategory ?? '', seoTitle: m0?.seoTitle ?? '', seoDesc: m0?.seoDesc ?? '' }))
+  const setx = <K extends keyof typeof x>(k: K) => (v: (typeof x)[K]) => setX((s) => ({ ...s, [k]: v }))
+  const unsaved = useUnsavedGuard(useDirty({ f, x }))
   const [image, setImage] = useState<string | null>(null)
   const [errors, setErrors] = useState<Record<string, string>>({})
   const set = (k: keyof typeof f) => (v: string) => setF((s) => ({ ...s, [k]: v }))
@@ -122,8 +135,13 @@ export function ProductForm({ id }: { id?: string }) {
     if (f.name.trim().length < 2) e.name = 'Name the product'
     const price = Number(f.price)
     if (!Number.isInteger(price) || price <= 0) e.price = 'Enter the price in whole shillings'
-    const stock = Number(f.stock)
+    const stock = existing ? existing.stock : Number(f.stock)
     if (!Number.isInteger(stock) || stock < 0) e.stock = 'Stock must be 0 or more'
+    const cost = Number(x.cost)
+    if (x.cost !== '' && (!Number.isInteger(cost) || cost <= 0)) e.cost = 'Enter the cost in whole shillings'
+    if (x.barcode && !/^\d{13}$/.test(x.barcode.trim())) e.barcode = 'A barcode has 13 digits'
+    if (x.barcode && products.some((p) => p.id !== id && inv.meta(p).barcode === x.barcode.trim())) e.barcode = 'Another product uses this barcode'
+    if (cost > price) e.cost = 'The cost is more than the selling price'
     const reorder = Number(f.reorderAt)
     if (!Number.isInteger(reorder) || reorder < 0) e.reorderAt = 'Enter 0 or more'
     const sku = f.sku.trim() || `SC-${f.category.slice(0, 3).toUpperCase()}-${100 + products.length + 1}`
@@ -132,15 +150,21 @@ export function ProductForm({ id }: { id?: string }) {
     setErrors(e)
     if (Object.keys(e).length) return
     const data = { name: f.name.trim(), sku, category: f.category as Product['category'], price, stock, reorderAt: reorder, status: f.status, description: f.description.trim() }
+    const metaPatch = { brandId: x.brandId, supplierId: x.supplierId, cost: cost || Math.round((price * 0.58) / 10) * 10, barcode: x.barcode.trim() || (m0?.barcode ?? ''), tax: x.tax, track: x.track, subcategory: x.subcategory, seoTitle: x.seoTitle.trim(), seoDesc: x.seoDesc.trim() }
     if (existing) {
       setProducts(products.map((p) => (p.id === existing.id ? { ...p, ...data } : p)))
+      inv.setMeta(existing.id, metaPatch)
       log(`Updated product · ${data.name}`, 'Products')
       toast('Product saved')
     } else {
-      setProducts([{ id: `p${Date.now()}`, createdAt: Date.now(), ...data }, ...products])
+      const newId = `p${Date.now()}`
+      setProducts([{ id: newId, createdAt: Date.now(), ...data }, ...products])
+      inv.setMeta(newId, { ...metaPatch, handle: data.name.toLowerCase().replace(/[^a-z0-9]+/g, '-') })
+      inv.recordOpening(newId, stock)
       log(`Added product · ${data.name}`, 'Products')
       toast('Product added')
     }
+    unsaved()
     navigate('/products')
   }
 
@@ -154,6 +178,7 @@ export function ProductForm({ id }: { id?: string }) {
         setProducts(products.filter((p) => p.id !== existing!.id))
         log(`Deleted product · ${existing!.name}`, 'Products', 'Security')
         toast('Product deleted')
+        unsaved()
         navigate('/products')
       },
     })
@@ -167,7 +192,7 @@ export function ProductForm({ id }: { id?: string }) {
           <>
             <Btn onClick={() => navigate('/products')}>Back to products</Btn>
             {existing && (
-              <Btn disabled={!can('Products', 'Create')} onClick={() => { setProducts([{ ...existing, id: `p${Date.now()}`, name: `${existing.name} (copy)`, sku: `${existing.sku}-C`, status: 'Draft', createdAt: Date.now() }, ...products]); toast('Duplicated as a draft'); navigate('/products') }}>Duplicate</Btn>
+              <Btn disabled={!can('Products', 'Create')} onClick={() => { setProducts([{ ...existing, id: `p${Date.now()}`, name: `${existing.name} (copy)`, sku: `${existing.sku}-C`, status: 'Draft', createdAt: Date.now() }, ...products]); toast('Duplicated as a draft'); unsaved(); navigate('/products') }}>Duplicate</Btn>
             )}
             {existing && <Btn variant="danger" disabled={!can('Products', 'Delete')} onClick={remove}>Delete</Btn>}
           </>
@@ -183,8 +208,18 @@ export function ProductForm({ id }: { id?: string }) {
             <Field label="Category" value={f.category} onChange={set('category')} options={categories} />
             <Field label="Price (KES)" value={f.price} onChange={set('price')} error={errors.price} />
             <Field label="Status" value={f.status} onChange={set('status')} options={['Draft', 'Active', 'Archived']} />
-            <Field label="Stock on hand" value={f.stock} onChange={set('stock')} error={errors.stock} />
+            <Field label="Stock on hand" value={existing ? String(existing.stock) : f.stock} onChange={set('stock')} error={errors.stock} hint={existing ? 'Change stock from Stock adjustment so it is recorded.' : 'Opening stock goes to your main location.'} />
             <Field label="Reorder level" value={f.reorderAt} onChange={set('reorderAt')} error={errors.reorderAt} hint="You’ll be warned when stock falls to this number." />
+          </div>
+          <h3 style={{ fontSize: 12, margin: '6px 0 8px' }}>Inventory details</h3>
+          <div className="form-grid">
+            <Field label="Brand" value={x.brandId} onChange={setx('brandId')} options={[{ value: '', label: 'No brand' }, ...inv.brands.map((b) => ({ value: b.id, label: b.name }))]} />
+            <Field label="Subcategory" value={x.subcategory} onChange={setx('subcategory')} options={[{ value: '', label: 'None' }, ...(inv.tree[f.category]?.subs ?? []).map((sub) => ({ value: sub, label: sub }))]} />
+            <Field label="Supplier" value={x.supplierId} onChange={setx('supplierId')} options={[{ value: '', label: 'No supplier' }, ...inv.suppliers.map((s) => ({ value: s.id, label: s.name }))]} />
+            <Field label="Cost per unit (KES)" value={x.cost} onChange={setx('cost')} error={errors.cost} hint="What you pay. Used for stock value and profit." />
+            <Field label="Barcode (EAN-13)" value={x.barcode} onChange={setx('barcode')} error={errors.barcode} placeholder="Generated if empty" />
+            <Field label="Tax category" value={x.tax} onChange={(v) => setx('tax')(v as 'Standard VAT' | 'Zero-rated')} options={['Standard VAT', 'Zero-rated']} />
+            <Field label="Inventory tracking" value={x.track ? 'Track quantity' : 'Do not track'} onChange={(v) => setx('track')(v === 'Track quantity')} options={['Track quantity', 'Do not track']} />
           </div>
           <Field label="Description" multiline value={f.description} onChange={set('description')} error={errors.description} />
           <div className="field">
@@ -211,124 +246,6 @@ export function ProductForm({ id }: { id?: string }) {
           <SettingRow title="Category" right={<span className="prod-name">{f.category}</span>} />
         </Panel>
       </div>
-    </>
-  )
-}
-
-// ---- categories and stock -------------------------------------------------------------------------------------
-
-function RestockForm({ product }: { product: Product }) {
-  const { products, setProducts, closeModal, toast, log } = useStore()
-  const [qty, setQty] = useState('20')
-  const [error, setError] = useState('')
-  return (
-    <>
-      <Field label={`Units received for ${product.name}`} value={qty} onChange={(v) => { setQty(v); setError('') }} error={error} hint={`Currently ${product.stock} in stock.`} />
-      <div className="actions" style={{ justifyContent: 'flex-end' }}>
-        <Btn onClick={closeModal}>Cancel</Btn>
-        <Btn variant="primary" onClick={() => {
-          const n = Number(qty)
-          if (!Number.isInteger(n) || n <= 0) return setError('Enter a whole number above 0')
-          setProducts(products.map((p) => (p.id === product.id ? { ...p, stock: p.stock + n } : p)))
-          log(`Restocked ${product.name} (+${n})`, 'Products')
-          closeModal()
-          toast(`${product.name} restocked`)
-        }}>Add stock</Btn>
-      </div>
-    </>
-  )
-}
-
-function CategoryForm({ current }: { current?: string }) {
-  const { categories, setCategories, products, setProducts, closeModal, toast, log } = useStore()
-  const [name, setName] = useState(current ?? '')
-  const [error, setError] = useState('')
-  const submit = () => {
-    const n = name.trim()
-    if (n.length < 2) return setError('Name the category')
-    if (categories.some((c) => c.toLowerCase() === n.toLowerCase() && c !== current)) return setError('That category already exists')
-    if (current) {
-      setCategories(categories.map((c) => (c === current ? n : c)))
-      setProducts(products.map((p) => (p.category === current ? { ...p, category: n as Product['category'] } : p)))
-      log(`Renamed category · ${current} → ${n}`, 'Products')
-    } else {
-      setCategories([...categories, n])
-      log(`Added category · ${n}`, 'Products')
-    }
-    closeModal()
-    toast(current ? 'Category renamed' : 'Category added')
-  }
-  return (
-    <>
-      <Field label="Category name" value={name} onChange={(v) => { setName(v); setError('') }} error={error} />
-      <div className="actions" style={{ justifyContent: 'flex-end' }}>
-        <Btn onClick={closeModal}>Cancel</Btn>
-        <Btn variant="primary" onClick={submit}>{current ? 'Rename' : 'Add category'}</Btn>
-      </div>
-    </>
-  )
-}
-
-export function Inventory() {
-  const { products, categories, setCategories, can, openModal, toast, log } = useStore()
-  const [tab, setTab] = useState<'Low stock' | 'Categories'>('Low stock')
-  const low = products.filter((p) => p.status !== 'Archived' && p.stock <= p.reorderAt).sort((a, b) => a.stock - b.stock)
-
-  return (
-    <>
-      <PageHead
-        title="Categories and stock"
-        desc="Keep shelves full and the catalogue organised."
-        actions={<Btn variant="primary" disabled={!can('Products', 'Create')} onClick={() => openModal({ title: 'Add category', body: <CategoryForm />, noActions: true })}>Add category</Btn>}
-      />
-      <section className="card" style={{ marginBottom: 14 }}>
-        <Tabs tabs={['Low stock', 'Categories'] as const} value={tab} onChange={setTab} />
-      </section>
-      {tab === 'Low stock' ? (
-        <section className="card table-card">
-          <div className="table-head"><h2>Needs restocking</h2><span className="panel-sub">{low.length} products at or below their reorder level</span></div>
-          <div className="table-wrap">
-            <table>
-              <thead><tr><th>Product</th><th>Category</th><th>Stock</th><th>Reorder level</th><th /></tr></thead>
-              <tbody>
-                {low.map((p) => (
-                  <tr key={p.id}>
-                    <td><button className="link-btn" onClick={() => navigate(`/products/${p.id}`)}>{p.name}</button><div className="subtext">{p.sku}</div></td>
-                    <td>{p.category}</td><td>{stockBadge(p)}</td><td>{p.reorderAt}</td>
-                    <td><Btn small disabled={!can('Products', 'Edit')} onClick={() => openModal({ title: 'Receive stock', body: <RestockForm product={p} />, noActions: true })}>Restock</Btn></td>
-                  </tr>
-                ))}
-                {low.length === 0 && <tr><td colSpan={5} style={{ textAlign: 'center', padding: 28, color: 'var(--muted)' }}>Everything is well stocked.</td></tr>}
-              </tbody>
-            </table>
-          </div>
-        </section>
-      ) : (
-        <section className="card table-card">
-          <div className="table-head"><h2>Categories</h2></div>
-          <div className="table-wrap">
-            <table>
-              <thead><tr><th>Category</th><th>Products</th><th>Active</th><th /></tr></thead>
-              <tbody>
-                {categories.map((c) => {
-                  const inCat = products.filter((p) => p.category === c)
-                  return (
-                    <tr key={c}>
-                      <td><b>{c}</b></td><td>{inCat.length}</td><td>{inCat.filter((p) => p.status === 'Active').length}</td>
-                      <td>
-                        <div className="actions">
-                          <Btn small disabled={!can('Products', 'Edit')} onClick={() => openModal({ title: 'Rename category', body: <CategoryForm current={c} />, noActions: true })}>Rename</Btn>
-                          <Btn small variant="danger" disabled={!can('Products', 'Delete')} onClick={() => inCat.length ? toast('Move or delete this category’s products first') : openModal({ title: `Delete ${c}?`, message: 'The category is empty, so nothing else changes.', confirm: 'Delete', danger: true, onConfirm: () => { setCategories(categories.filter((x) => x !== c)); log(`Deleted category · ${c}`, 'Products', 'Security'); toast('Category deleted') } })}>Delete</Btn>
-                        </div>
-                      </td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
-          </div>
-        </section>
-      )}
     </>
   )
 }

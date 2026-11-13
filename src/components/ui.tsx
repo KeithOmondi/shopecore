@@ -1,5 +1,7 @@
 import { useId, useMemo, useState, type ChangeEvent, type ReactNode } from 'react'
 
+import { EmptyState, ErrorState, SearchEmpty, SkeletonRows } from './states'
+
 export const statusClass = (s: string) =>
   ['Active', 'Healthy', 'Connected', 'Complete', 'Included'].includes(s)
     ? 'green'
@@ -171,7 +173,7 @@ export interface Column<T> {
 }
 
 export function DataTable<T>({
-  title, rows, rowKey, columns, searchText, searchLabel, tools, actions, pageSize = 8, bulk, empty = 'No records match your search.',
+  title, rows, rowKey, columns, searchText, searchLabel, tools, actions, pageSize = 8, bulk, empty = 'Nothing here yet.', loading, error, onRetry, emptyTitle, emptyAction,
 }: {
   title: string
   rows: T[]
@@ -184,6 +186,14 @@ export function DataTable<T>({
   pageSize?: number
   bulk?: { label: string; onClick: (ids: string[]) => void }
   empty?: string
+  /** Show skeleton rows while the data arrives. */
+  loading?: boolean
+  /** Show an error with a retry instead of the table. */
+  error?: string
+  onRetry?: () => void
+  emptyTitle?: string
+  /** A call to action for a table that has nothing in it yet. */
+  emptyAction?: { label: string; onClick: () => void }
 }) {
   const [q, setQ] = useState('')
   const [sortKey, setSortKey] = useState<string>()
@@ -258,7 +268,14 @@ export function DataTable<T>({
         </div>
       </div>
       <div className="table-wrap">
-        <table>
+        {error ? (
+          <ErrorState title={`We couldn’t load ${title.toLowerCase()}`} message={error} onRetry={onRetry} />
+        ) : !loading && rows.length === 0 ? (
+          <EmptyState title={emptyTitle ?? 'Nothing here yet'} hint={empty} action={emptyAction} />
+        ) : !loading && filtered.length === 0 ? (
+          <SearchEmpty query={q.trim()} onClear={() => setQ('')} />
+        ) : (
+        <table aria-busy={loading || undefined}>
           <thead>
             <tr>
               <th>
@@ -279,7 +296,8 @@ export function DataTable<T>({
             </tr>
           </thead>
           <tbody>
-            {shown.map((r) => (
+            {loading && <SkeletonRows cols={columns.length + (actions ? 2 : 1)} />}
+            {!loading && shown.map((r) => (
               <tr key={rowKey(r)}>
                 <td>
                   <input className="table-check" type="checkbox" aria-label="Select row" checked={picked.has(rowKey(r))} onChange={(e) => toggleOne(rowKey(r), e.target.checked)} />
@@ -290,18 +308,12 @@ export function DataTable<T>({
                 {actions && <td>{actions(r)}</td>}
               </tr>
             ))}
-            {shown.length === 0 && (
-              <tr>
-                <td colSpan={columns.length + 2} style={{ textAlign: 'center', padding: 28, color: 'var(--muted)' }}>
-                  {empty}
-                </td>
-              </tr>
-            )}
           </tbody>
         </table>
+        )}
       </div>
       <div className="table-foot">
-        <span>{`Showing ${from}–${to} of ${filtered.length} records`}</span>
+        <span>{loading ? 'Loading…' : `Showing ${from}–${to} of ${filtered.length} records`}</span>
         <div className="pagination">
           <button type="button" aria-label="Previous page" disabled={current === 1} onClick={() => setPage(current - 1)}>‹</button>
           {nums.map((n, i) => (

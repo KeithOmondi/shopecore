@@ -4,6 +4,7 @@ import { AvatarTile, Badge, Btn, DataTable, downloadCsv, Field, isEmail, Notice,
 import { initials, ROLE_PREVIEW, ROLES, TOTAL_SEATS, type Staff } from '../data/seed'
 import { navigate } from '../lib/router'
 import { useStore } from '../lib/store'
+import { useDirty, useUnsavedGuard } from '../lib/unsaved'
 
 const ROLE_OPTIONS = [...ROLES.filter((r) => r !== 'Owner admin'), 'Custom role'] as const
 
@@ -158,6 +159,7 @@ export function StaffForm({ id }: { id?: string }) {
   const [phone, setPhone] = useState(existing?.phone ?? '')
   const [role, setRole] = useState(existing?.role ?? ROLE_OPTIONS[0])
   const [errors, setErrors] = useState<Record<string, string>>({})
+  const unsaved = useUnsavedGuard(useDirty({ name, email, phone, role }))
 
   if (id && !existing) {
     return (
@@ -192,6 +194,7 @@ export function StaffForm({ id }: { id?: string }) {
       updateStaff(existing.id, { name: name.trim(), email: email.trim(), phone: phone.trim(), role })
       log(`Updated staff member · ${name.trim()}`, 'Staff', 'Access')
       toast('Staff member updated')
+      unsaved()
       navigate('/staff')
       return
     }
@@ -201,6 +204,7 @@ export function StaffForm({ id }: { id?: string }) {
       confirm: 'Create account',
       onConfirm: () => {
         const { temp } = addStaff({ name: name.trim(), email: email.trim(), phone: phone.trim(), role })
+        unsaved()
         navigate('/staff')
         setTimeout(() => openModal({ title: 'Account created', message: `Temporary password for ${email.trim()}. Share it securely. It won’t be shown again.`, body: <TempPassword value={temp} />, confirm: 'Done', cancelLabel: 'Close' }), 0)
       },

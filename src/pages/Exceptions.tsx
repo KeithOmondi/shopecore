@@ -29,7 +29,7 @@ export function FailedDeliveries() {
   const [tab, setTab] = useState<'All' | 'Cancelled' | 'Failed' | 'Refunded'>('All')
   const [reason, setReason] = useState('All reasons')
   const [date, setDate] = useState('')
-  const edit = can('Orders', 'Edit')
+  const edit = can('Dispatch', 'Edit')
 
   const fromOrders: Exception[] = orders
     .filter((o) => o.status === 'Cancelled' || o.status === 'Refunded')

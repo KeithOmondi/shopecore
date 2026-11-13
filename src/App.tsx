@@ -1,11 +1,14 @@
 import { useEffect, type ReactNode } from 'react'
 
 import { Drawer, Modal, Sidebar, Toast, Topbar } from './components/Shell'
+import { MaintenanceScreen, OfflineBanner, PageBoundary, PermissionDenied } from './components/states'
 import { Btn, Notice, PageHead } from './components/ui'
-import { canOpen, displayLabel, navigate, pageFor, usePath } from './lib/router'
+import { canOpen, displayLabel, navigate, pageFor, rolesWith, usePath } from './lib/router'
 import { StoreProvider, useStore } from './lib/store'
 import { SupportProvider } from './lib/support'
 import { FinanceProvider } from './lib/finance'
+import { InventoryProvider } from './lib/inventory'
+import { MarketingProvider } from './lib/marketing'
 import { AuditLog, Roles } from './pages/Access'
 import { CustomerDetail, CustomersList } from './pages/Customers'
 import Overview from './pages/Overview'
@@ -18,12 +21,20 @@ import { DeliveryZones, ShiftPlanner } from './pages/Operations'
 import { AccountsLedger, FailedPayments, FinanceOverview, PaymentDetail, PaymentsList, ProfitLoss, Reconciliation, RefundsLedger, VatReport } from './pages/FinanceCore'
 import { CodDeposit, CodManagement, EarningsStatements, PayoutBatches, RiderPayouts, StoreSettlements } from './pages/FinanceCash'
 import { DeliveryCost, ExportCenter, Expenses, FinanceSettingsPage, InvoiceDetail, InvoiceForm, InvoicesList, PeriodClose, SalesReports } from './pages/FinanceBilling'
+import { Bundles, CampaignAnalytics, CouponEditor, CouponsList, FlashSales, MarketingOverview } from './pages/MarketingCampaigns'
+import { AudienceSegments, LoyaltyRules, MessageCampaigns, PushNotifications, ReferralSettings, ReviewHighlights } from './pages/MarketingEngagement'
+import { BannersManager, CategoryContentPage, ContentPages, HomepageBuilder } from './pages/MarketingContent'
+import { BrandsPage, BulkImport, CategoriesPage } from './pages/InventoryCatalog'
+import { PackingQueue, ReturnInspection, ReturnsRestock } from './pages/InventoryFulfilment'
+import { BarcodeLabels, CycleCounts, InventoryOverview, LowStockAlerts, MovementHistory, StockAdjustment, StockLevels } from './pages/InventoryStock'
+import { PurchaseOrderDetail, PurchaseOrderForm, PurchaseOrders, ReceiveStock, Suppliers } from './pages/Purchasing'
 import { EmployeePayProfiles, PayrollRunDetail, PayrollRuns, Remittances } from './pages/Payroll'
 import FirstSignIn from './pages/FirstSignIn'
 import Login from './pages/Login'
 import { NewOrder, OrderDetail, OrdersList } from './pages/Orders'
-import { Inventory, ProductForm, ProductsList } from './pages/Products'
+import { ProductForm, ProductsList } from './pages/Products'
 import Reports from './pages/Reports'
+import SystemStates from './pages/SystemStates'
 import { Applications, RiderDetail, RidersList } from './pages/Riders'
 import { Health, Integrations, Templates } from './pages/System'
 import { CustomerLookup, Disputes, RefundReview, RefundsList, ReturnDetail, ReturnsList } from './pages/Claims'
@@ -39,14 +50,21 @@ function NotFound() {
   )
 }
 
-function NoAccess({ role }: { role: string }) {
+function NoAccess({ role, label }: { role: string; label: string }) {
+  const { permissions, requestAccess, requestedAccess } = useStore()
+  const needed = rolesWith(label, permissions)
   return (
     <>
-      <PageHead title="No access" desc={`The ${role} role can’t open this page.`} actions={<Btn onClick={() => navigate('/')}>Go to overview</Btn>} />
-      <Notice tone="warning" mark="!">Ask a workspace owner to change your role, or switch role from the badge in the top bar.</Notice>
+      <PageHead title="No access" desc={`The ${role} role can’t open this page.`} actions={<Btn onClick={() => navigate('/')}>Go to my home page</Btn>} />
+      <section className="card panel">
+        <PermissionDenied title={`You don’t have permission to open ${label.toLowerCase()}`} body="This page belongs to another department. If you need it for your work, ask your workspace owner for access." yourRole={role} requiredRole={needed.join(' or ')} onRequest={() => requestAccess(label)} requested={requestedAccess.includes(label)} />
+      </section>
     </>
   )
 }
+
+/** Pages that read their starting values from the address need to start fresh when the address changes. */
+const w = () => window.location.hash
 
 function route(path: string): ReactNode {
   if (path === '/') return <Overview />
@@ -69,7 +87,24 @@ function route(path: string): ReactNode {
   if (path === '/products') return <ProductsList />
   if (path === '/products/new') return <ProductForm key="new" />
   if (path.startsWith('/products/')) return <ProductForm key={path} id={path.slice(10)} />
-  if (path === '/inventory') return <Inventory />
+  if (path === '/stock') return <InventoryOverview />
+  if (path === '/inventory' || path === '/inventory/categories') return <CategoriesPage />
+  if (path === '/inventory/brands') return <BrandsPage />
+  if (path === '/inventory/levels') return <StockLevels />
+  if (path === '/inventory/alerts') return <LowStockAlerts />
+  if (path === '/inventory/adjust') return <StockAdjustment />
+  if (path === '/inventory/movements') return <MovementHistory />
+  if (path === '/inventory/counts') return <CycleCounts />
+  if (path === '/inventory/labels') return <BarcodeLabels />
+  if (path === '/inventory/import') return <BulkImport />
+  if (path === '/inventory/packing') return <PackingQueue />
+  if (path === '/inventory/returns') return <ReturnsRestock />
+  if (path.startsWith('/inventory/returns/')) return <ReturnInspection key={path} id={path.slice(19)} />
+  if (path === '/purchasing') return <PurchaseOrders />
+  if (path === '/purchasing/new') return <PurchaseOrderForm key={w()} />
+  if (path === '/purchasing/receive') return <ReceiveStock key={w()} />
+  if (path === '/purchasing/suppliers') return <Suppliers />
+  if (path.startsWith('/purchasing/')) return <PurchaseOrderDetail key={path} id={path.slice(12)} />
   if (path === '/riders') return <RidersList />
   if (path === '/riders/applications') return <Applications />
   if (path.startsWith('/riders/applications/')) return <Applications key={path} id={path.slice(21)} />
@@ -84,6 +119,24 @@ function route(path: string): ReactNode {
   if (path === '/exceptions') return <FailedDeliveries />
   if (path === '/incidents') return <Incidents />
   if (path.startsWith('/riders/')) return <RiderDetail key={path} id={path.slice(8)} />
+  if (path === '/marketing') return <MarketingOverview />
+  if (path === '/marketing/coupons') return <CouponsList />
+  if (path === '/marketing/coupons/new') return <CouponEditor key="new" />
+  if (path.startsWith('/marketing/coupons/')) return <CouponEditor key={path} id={path.slice(19)} />
+  if (path === '/marketing/flash') return <FlashSales />
+  if (path === '/marketing/bundles') return <Bundles />
+  if (path === '/marketing/analytics') return <CampaignAnalytics />
+  if (path.startsWith('/marketing/analytics/')) return <CampaignAnalytics key={path} id={path.slice(21)} />
+  if (path === '/marketing/push') return <PushNotifications />
+  if (path === '/marketing/messages') return <MessageCampaigns />
+  if (path === '/marketing/segments') return <AudienceSegments />
+  if (path === '/marketing/loyalty') return <LoyaltyRules />
+  if (path === '/marketing/referrals') return <ReferralSettings />
+  if (path === '/marketing/highlights') return <ReviewHighlights />
+  if (path === '/marketing/banners') return <BannersManager />
+  if (path === '/marketing/homepage') return <HomepageBuilder />
+  if (path === '/marketing/pages') return <ContentPages />
+  if (path === '/marketing/categories') return <CategoryContentPage />
   if (path === '/finance') return <FinanceOverview />
   if (path === '/payments') return <PaymentsList />
   if (path.startsWith('/payments/')) return <PaymentDetail key={path} id={path.slice(10)} />
@@ -129,12 +182,13 @@ function route(path: string): ReactNode {
   if (path === '/support/reviews') return <Reviews />
   if (path === '/support/help') return <KnowledgeBase />
   if (path === '/support/canned') return <CannedResponses />
+  if (path === '/system/states') return <SystemStates />
   if (path === '/account') return <Account />
   return <NotFound />
 }
 
 function Shell() {
-  const { collapsed, role, permissions, user } = useStore()
+  const { collapsed, role, permissions, user, offline, setForceOffline, toast, maintenance, setMaintenance, logout } = useStore()
   const path = usePath()
   const page = pageFor(path)
 
@@ -159,12 +213,26 @@ function Shell() {
     </>
   )
 
+  const privileged = user.role === 'Owner admin' || user.role === 'IT support'
+  if (maintenance.on && !privileged) return (
+    <>
+      <div className="maintenance-page">
+        <MaintenanceScreen message={maintenance.message} etaMinutes={maintenance.etaMinutes} actions={<Btn onClick={() => { logout(); toast('Signed out') }}>Sign out</Btn>} />
+      </div>
+      <Toast />
+    </>
+  )
+
   return (
     <div className={`app ${collapsed ? 'collapse' : ''}`}>
       <Sidebar />
       <main className="main">
         <Topbar />
-        <section className="content" aria-live="polite">{blocked ? <NoAccess role={role} /> : route(path)}</section>
+        <section className="content" aria-live="polite">
+          {offline && <OfflineBanner onRetry={() => { setForceOffline(false); if (navigator.onLine) toast('Back online'); else toast('Still offline. Check your connection and try again.', 'error') }} />}
+          {maintenance.on && <div className="banner info" role="status"><strong>Maintenance mode is on</strong><span>Only owners and IT support can use the admin right now.</span><Btn small onClick={() => setMaintenance({ ...maintenance, on: false })}>Turn off</Btn></div>}
+          {blocked ? <NoAccess role={role} label={page?.label ?? 'this page'} /> : <PageBoundary key={path}>{route(path)}</PageBoundary>}
+        </section>
       </main>
       <Drawer />
       <Modal />
@@ -178,7 +246,11 @@ export default function App() {
     <StoreProvider>
       <SupportProvider>
         <FinanceProvider>
-          <Shell />
+          <MarketingProvider>
+            <InventoryProvider>
+              <Shell />
+            </InventoryProvider>
+          </MarketingProvider>
         </FinanceProvider>
       </SupportProvider>
     </StoreProvider>

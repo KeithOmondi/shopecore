@@ -11,42 +11,42 @@ export const kes = (n: number) => `KES ${Math.round(n).toLocaleString('en-US')}`
 
 // ---- roles ---------------------------------------------------------------------------
 
-export const ROLES = ['Owner admin', 'Operations manager', 'Dispatch manager', 'Finance analyst', 'Customer support', 'Rider manager', 'IT support'] as const
+export const ROLES = ['Owner admin', 'Operations manager', 'Dispatch manager', 'Finance analyst', 'Customer support', 'Rider manager', 'IT support', 'Marketing manager', 'Inventory manager', 'Warehouse lead', 'Purchasing agent'] as const
 export type Role = (typeof ROLES)[number]
 
-export const MODULES = ['Overview', 'Orders', 'Products', 'Customers', 'Riders', 'Payments', 'Payroll', 'Reports', 'Support', 'Settings'] as const
+export const MODULES = ['Overview', 'Orders', 'Dispatch', 'Products', 'Customers', 'Riders', 'Payments', 'Payroll', 'Reports', 'Support', 'Claims', 'Marketing', 'Inventory', 'Purchasing', 'Staff', 'Access', 'System', 'Settings'] as const
 export const ACTIONS = ['View', 'Create', 'Edit', 'Delete', 'Export'] as const
 export type Module = (typeof MODULES)[number]
 export type Permissions = Record<Module, boolean[]>
 
 const row = (view: boolean, create = false, edit = false, del = false, exp = false) => [view, create, edit, del, exp]
 
+const perms = (spec: Partial<Record<Module, boolean[]>>): Permissions => Object.fromEntries(MODULES.map((m) => [m, spec[m] ?? row(false)])) as Permissions
+
+/**
+ * What each department may open. A page belongs to exactly one module, so this table is the whole story:
+ * if a module is off, none of its pages or links show for that role.
+ */
 export const seedPermissions = (): Record<Role, Permissions> => ({
   'Owner admin': Object.fromEntries(MODULES.map((m) => [m, row(true, true, true, true, true)])) as Permissions,
-  'Operations manager': {
-    Overview: row(true), Orders: row(true, true, true, false, true), Products: row(true, true, true), Customers: row(true, false, true),
-    Riders: row(true, true, true), Payments: row(false), Payroll: row(false), Reports: row(true, false, false, false, true), Support: row(true, true, true, false, true), Settings: row(true),
-  },
-  'Dispatch manager': {
-    Overview: row(true), Orders: row(true, true, true, false, true), Products: row(true), Customers: row(true), Riders: row(true, true, true, false, true),
-    Payments: row(false), Payroll: row(false), Reports: row(true, false, false, false, true), Support: row(true), Settings: row(true),
-  },
-  'Finance analyst': {
-    Overview: row(true), Orders: row(true, false, false, false, true), Products: row(true), Customers: row(true), Riders: row(false),
-    Payments: row(true, true, true, false, true), Payroll: row(true, true, true, false, true), Reports: row(true, false, false, false, true), Support: row(true, false, true), Settings: row(true),
-  },
-  'Customer support': {
-    Overview: row(false), Orders: row(true, false, false, false, true), Products: row(true), Customers: row(true, true, true), Riders: row(false),
-    Payments: row(false), Payroll: row(false), Reports: row(false), Support: row(true, true, true, false, true), Settings: row(false),
-  },
-  'IT support': {
-    Overview: row(false), Orders: row(false), Products: row(false), Customers: row(false), Riders: row(false),
-    Payments: row(false), Payroll: row(false), Reports: row(false), Support: row(false), Settings: row(true, true, true, false, true),
-  },
-  'Rider manager': {
-    Overview: row(true), Orders: row(true, false, true), Products: row(false), Customers: row(false), Riders: row(true, true, true, false, true),
-    Payments: row(false), Payroll: row(false), Reports: row(true, false, false, false, true), Support: row(true), Settings: row(false),
-  },
+  'Operations manager': perms({
+    Overview: row(true), Orders: row(true, true, true, false, true), Dispatch: row(true, true, true, false, true), Products: row(true, true, true), Customers: row(true, false, true), Riders: row(true, true, true), Reports: row(true, false, false, false, true),
+    Support: row(true), Claims: row(true), Marketing: row(true), Inventory: row(true, true, true, false, true), Purchasing: row(true, true, true), Staff: row(true), Settings: row(true),
+  }),
+  'Dispatch manager': perms({ Orders: row(true, true, true, false, true), Dispatch: row(true, true, true, false, true), Riders: row(true, true, true, false, true), Reports: row(true, false, false, false, true) }),
+  'Finance analyst': perms({
+    Orders: row(true, false, false, false, true), Products: row(true), Payments: row(true, true, true, false, true), Payroll: row(true, true, true, false, true), Reports: row(true, false, false, false, true),
+    Claims: row(true, false, true), Purchasing: row(true), Settings: row(true),
+  }),
+  'Customer support': perms({ Orders: row(true, false, false, false, true), Dispatch: row(true), Products: row(true), Customers: row(true, true, true), Support: row(true, true, true, false, true), Claims: row(true, true, true, false, true) }),
+  'Rider manager': perms({ Riders: row(true, true, true, false, true), Reports: row(true, false, false, false, true) }),
+  'IT support': perms({ Staff: row(true, true, true, false, true), Access: row(true, false, true), System: row(true, true, true, false, true) }),
+  'Marketing manager': perms({ Products: row(true), Customers: row(true, false, false, false, true), Reports: row(true, false, false, false, true), Marketing: row(true, true, true, true, true) }),
+  'Inventory manager': perms({
+    Orders: row(true, false, true), Products: row(true, true, true, true, true), Reports: row(true, false, false, false, true), Inventory: row(true, true, true, true, true), Purchasing: row(true, true, true, true, true),
+  }),
+  'Warehouse lead': perms({ Orders: row(true, false, true), Products: row(true), Inventory: row(true, true, true, false, true), Purchasing: row(true) }),
+  'Purchasing agent': perms({ Products: row(true), Reports: row(true), Inventory: row(true), Purchasing: row(true, true, true, false, true) }),
 })
 
 /** Short description shown next to a role. */
@@ -58,6 +58,10 @@ export const ROLE_BLURB: Record<Role, string> = {
   'Customer support': 'Customers, orders and reviews',
   'Rider manager': 'Riders, delivery zones and reports',
   'IT support': 'Staff accounts, passwords, access and system health',
+  'Marketing manager': 'Coupons, campaigns, banners, loyalty and storefront content',
+  'Inventory manager': 'Products, stock, purchasing and warehouse operations',
+  'Warehouse lead': 'Stock counts, receiving, packing and returns',
+  'Purchasing agent': 'Suppliers and purchase orders',
 }
 
 /** The permission preview in the staff form. */
@@ -68,6 +72,10 @@ export const ROLE_PREVIEW: Record<string, [string, string][]> = {
   'Operations manager': [['Orders', 'View, edit and export'], ['Products', 'Manage catalogue'], ['Riders', 'Manage profiles'], ['Delivery zones', 'View and edit']],
   'Finance analyst': [['Payments', 'View and reconcile'], ['Reports', 'View and export'], ['Orders', 'View and export'], ['Customers', 'View only']],
   'Customer support': [['Customers', 'View and edit'], ['Orders', 'View and update'], ['Reviews', 'Moderate'], ['Refunds', 'Request only']],
+  'Marketing manager': [['Coupons and sales', 'Create and run'], ['Campaigns', 'Push, SMS and email'], ['Storefront content', 'Banners and pages'], ['Customers', 'View and export']],
+  'Inventory manager': [['Products', 'Manage catalogue'], ['Stock', 'Adjust, count and transfer'], ['Purchasing', 'Orders and suppliers'], ['Packing', 'Queue and returns']],
+  'Warehouse lead': [['Stock', 'Count, receive and adjust'], ['Packing', 'Pick and pack orders'], ['Returns', 'Inspect and restock'], ['Purchasing', 'View only']],
+  'Purchasing agent': [['Purchase orders', 'Create and track'], ['Suppliers', 'Manage'], ['Stock', 'View only'], ['Products', 'View only']],
   'Custom role': [['Overview', 'View only']],
 }
 
@@ -106,6 +114,10 @@ export const seedStaff = (): Staff[] => [
   st('s12', 'Brian Mwenda', 'IT support', 'Active', '19 Oct, 5:02 PM', '+254 712 555 113'),
   { ...st('s13', 'Joy Naliaka', 'Finance analyst', 'Invited', '—', '+254 712 555 114'), mustChange: true },
   st('s14', 'Ibrahim Yusuf', 'Rider manager', 'Active', 'Today, 6:49 AM', '+254 712 555 115'),
+  st('s15', 'Ruth Njoki', 'Marketing manager', 'Active', 'Today, 8:05 AM', '+254 712 555 116'),
+  st('s16', 'Kevin Oloo', 'Inventory manager', 'Active', 'Today, 7:40 AM', '+254 712 555 117'),
+  st('s17', 'Sarah Wekesa', 'Warehouse lead', 'Active', 'Today, 7:12 AM', '+254 712 555 118'),
+  st('s18', 'Dennis Kibet', 'Purchasing agent', 'Active', 'Yesterday', '+254 712 555 119'),
 ]
 
 export const TOTAL_SEATS = 20

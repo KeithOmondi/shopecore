@@ -3,8 +3,9 @@ import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
 import { useFocusTrap } from '../lib/focus-trap'
 
 import { ROLES, type Role } from '../data/seed'
-import { canOpen, displayLabel, navigate, NAV_GROUPS, pageFor, ROLE_PAGE_COUNT, usePath } from '../lib/router'
+import { canOpen, displayLabel, homeOf, navigate, NAV_GROUPS, pageFor, ROLE_PAGE_COUNT, usePath } from '../lib/router'
 import { useStore } from '../lib/store'
+import { useInventory } from '../lib/inventory'
 import { useSupport } from '../lib/support'
 import { AvatarTile, Badge, Btn, Notice, SettingRow } from './ui'
 
@@ -15,8 +16,11 @@ export function Sidebar() {
   const path = usePath()
   const allowed = { has: (label: string) => canOpen(role, label, permissions[role]) }
   const { tickets, chats } = useSupport()
-  const counts = { tickets: tickets.filter((t) => t.kind === 'Customer' && t.status !== 'Resolved').length, chats: chats.filter((c) => !c.closed).reduce((n, c) => n + c.unread, 0) }
+  const { alerts } = useInventory()
+  const counts = { alerts: alerts.length, tickets: tickets.filter((t) => t.kind === 'Customer' && t.status !== 'Resolved').length, chats: chats.filter((c) => !c.closed).reduce((n, c) => n + c.unread, 0) }
 
+  const seen = new Set<string>()
+  const home = homeOf(role, permissions[role])
   return (
     <aside className="sidebar" aria-label="Main navigation">
       <div className="brand">
@@ -26,14 +30,21 @@ export function Sidebar() {
       </div>
       <div className="nav-scroll">
         {NAV_GROUPS.map((g) => {
-          const items = g.items.filter((i) => allowed.has(i.label))
+          const items = g.items.filter((i) => {
+            if (!allowed.has(i.label)) return false
+            if (i.label === 'Executive overview' && home.path !== '/') return false
+            const name = displayLabel(i.label, role, permissions[role])
+            if (seen.has(name)) return false
+            seen.add(name)
+            return true
+          })
           if (!items.length) return null
           return (
             <section className="nav-group" key={g.label}>
               <div className="nav-label">{g.label}</div>
               <div className="nav">
                 {items.map((i) => (
-                  <button key={i.label} className={i.match(path) ? 'active' : ''} aria-current={i.match(path) ? 'page' : undefined} aria-label={displayLabel(i.label, role, permissions[role])} title={displayLabel(i.label, role, permissions[role])} onClick={() => navigate(i.path)}>
+                  <button key={i.label} className={i.match(path) || (path === '/' && i.path === home.path) ? 'active' : ''} aria-current={i.match(path) || (path === '/' && i.path === home.path) ? 'page' : undefined} aria-label={displayLabel(i.label, role, permissions[role])} title={displayLabel(i.label, role, permissions[role])} onClick={() => navigate(i.path)}>
                     <span className="ic" aria-hidden="true">{i.icon}</span>
                     <span className="nav-text">{displayLabel(i.label, role, permissions[role])}</span>
                     {i.badge && counts[i.badge] > 0 && <span className="nav-count">{counts[i.badge]}</span>}
@@ -66,8 +77,10 @@ export function Topbar() {
     if (e.key !== 'Enter') return
     const needle = q.trim().toLowerCase()
     if (!needle) return toast('Enter a search term')
-    const c = customers.filter((x) => `${x.name} ${x.email} ${x.phone}`.toLowerCase().includes(needle)).slice(0, 6)
-    const s = staff.filter((x) => `${x.name} ${x.email} ${x.role}`.toLowerCase().includes(needle)).slice(0, 6)
+    const mayCustomers = canOpen(role, 'Customers list', permissions[role])
+    const mayStaff = canOpen(role, 'Staff list', permissions[role])
+    const c = !mayCustomers ? [] : customers.filter((x) => `${x.name} ${x.email} ${x.phone}`.toLowerCase().includes(needle)).slice(0, 6)
+    const s = !mayStaff ? [] : staff.filter((x) => `${x.name} ${x.email} ${x.role}`.toLowerCase().includes(needle)).slice(0, 6)
     const pages = NAV_GROUPS.flatMap((g) => g.items).filter((i) => canOpen(role, i.label, permissions[role]) && i.label.toLowerCase().includes(needle))
     const o = canOpen(role, 'Orders', permissions[role]) ? orders.filter((x) => `${x.id} ${x.customer}`.toLowerCase().includes(needle)).slice(0, 6) : []
     const pr = canOpen(role, 'Products', permissions[role]) ? products.filter((x) => `${x.name} ${x.sku}`.toLowerCase().includes(needle)).slice(0, 6) : []
@@ -146,9 +159,11 @@ function ResultList({ groups }: { groups: { title: string; rows: { key: string; 
 }
 
 function Notifications() {
-  const { closeDrawer, integrations, staff } = useStore()
-  const degraded = integrations.filter((i) => i.status !== 'Connected')
-  const invites = staff.filter((s) => s.status === 'Invited')
+  const { closeDrawer, integrations, staff, role, permissions } = useStore()
+  const mayHealth = canOpen(role, 'Backup and system health', permissions[role])
+  const mayStaff = canOpen(role, 'Staff list', permissions[role])
+  const degraded = mayHealth ? integrations.filter((i) => i.status !== 'Connected') : []
+  const invites = mayStaff ? staff.filter((s) => s.status === 'Invited') : []
   const go = (p: string) => () => { closeDrawer(); navigate(p) }
   return (
     <>
@@ -156,14 +171,14 @@ function Notifications() {
         <SettingRow key={i.id} title={`${i.name} is ${i.status.toLowerCase()}`} sub={i.note} right={<Btn small onClick={go('/integrations')}>Review</Btn>} />
       ))}
       {invites.length > 0 && <SettingRow title={`${invites.length} staff haven’t signed in yet`} sub={invites.map((s) => s.name).join(', ')} right={<Btn small onClick={go('/staff')}>View</Btn>} />}
-      <SettingRow title="Backup completed" sub="Today at 02:00 EAT · 1.2 GB" right={<Badge>Complete</Badge>} />
+      {mayHealth && <SettingRow title="Backup completed" sub="Today at 02:00 EAT · 1.2 GB" right={<Badge>Complete</Badge>} />}
       {!degraded.length && !invites.length && <Notice mark="✓" tone="success">You’re all caught up.</Notice>}
     </>
   )
 }
 
 function AccountMenu() {
-  const { dark, toggleDark, closeDrawer, openDrawer, role, user, logout, toast, previewRole, setPreviewRole } = useStore()
+  const { dark, toggleDark, closeDrawer, openDrawer, role, user, logout, toast, previewRole, setPreviewRole, permissions } = useStore()
   const go = (p: string) => () => { closeDrawer(); navigate(p) }
   return (
     <>
@@ -180,7 +195,7 @@ function AccountMenu() {
       {user?.role === 'Owner admin' && <SettingRow title="Viewing as" sub="Preview the admin as another role" right={<Btn small onClick={() => openDrawer({ title: 'Preview as another role', body: <RoleSwitcher /> })}>{role}</Btn>} />}
       {previewRole && <SettingRow title="Stop previewing" sub="Go back to your own role" right={<Btn small onClick={() => { setPreviewRole(null); closeDrawer(); toast('Back to your own role') }}>Stop</Btn>} />}
       <SettingRow title="Dark mode" sub="Easier on the eyes at night" right={<Btn small onClick={toggleDark}>{dark ? 'Turn off' : 'Turn on'}</Btn>} />
-      <SettingRow title="Audit log" sub="See what you and your team changed" right={<Btn small onClick={go('/audit')}>Open</Btn>} />
+      {canOpen(role, 'Audit log', permissions[role]) && <SettingRow title="Audit log" sub="See what you and your team changed" right={<Btn small onClick={go('/audit')}>Open</Btn>} />}
       <div style={{ marginTop: 16 }}>
         <Btn variant="danger" onClick={() => { closeDrawer(); logout(); toast('Signed out') }}>Sign out</Btn>
       </div>
@@ -253,6 +268,7 @@ export function Modal() {
     return () => window.removeEventListener('keydown', esc)
   }, [modal, closeModal])
   if (!modal) return null
+  const tone = modal.tone ?? (modal.danger ? 'danger' : !modal.noActions && modal.onConfirm ? 'warning' : undefined)
   const confirm = () => {
     const res = modal.onConfirm?.()
     if (res === false) return
@@ -262,8 +278,13 @@ export function Modal() {
   return (
     <div className="modal-backdrop open" onClick={(e) => e.target === e.currentTarget && closeModal()}>
       <section ref={ref} tabIndex={-1} className="modal" role="alertdialog" aria-modal="true" aria-labelledby="modalTitle">
-        <h2 id="modalTitle">{modal.title}</h2>
-        {modal.message && <p>{modal.message}</p>}
+        <div className="modal-head">
+          {tone && <span className={`modal-icon ${tone === 'danger' ? 'danger' : ''}`} aria-hidden="true">{tone === 'danger' ? '×' : '!'}</span>}
+          <div>
+            <h2 id="modalTitle">{modal.title}</h2>
+            {modal.message && <p>{modal.message}</p>}
+          </div>
+        </div>
         {modal.body && <div className="modal-body">{modal.body}</div>}
         {!modal.noActions && (
           <div className="actions" style={{ justifyContent: 'flex-end' }}>
@@ -277,9 +298,10 @@ export function Modal() {
 }
 
 export function Toast() {
-  const { toastMessage } = useStore()
+  const { toastMessage, toastKind } = useStore()
   return (
-    <div className={`toast ${toastMessage ? 'show' : ''}`} role="status" aria-live="polite">
+    <div className={`toast ${toastMessage ? 'show' : ''} ${toastKind === 'error' ? 'error' : ''}`} role={toastKind === 'error' ? 'alert' : 'status'} aria-live="polite">
+      {toastMessage && <span className="toast-mark" aria-hidden="true">{toastKind === 'error' ? '!' : '✓'}</span>}
       {toastMessage}
     </div>
   )

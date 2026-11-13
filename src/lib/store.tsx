@@ -1,5 +1,7 @@
 import { createContext, use, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 
+import { setLeavePrompt } from './router'
+
 import { seedFailures, seedIncidents, seedShifts, type Failure, type Incident, type Shift } from '../data/ops'
 import {
   CATEGORIES, seedDeposits, seedOrders, seedPayouts, seedProducts, seedRiders, transactionsFrom,
@@ -21,6 +23,14 @@ export interface ModalSpec {
   cancelLabel?: string
   /** The body supplies its own buttons (forms). */
   noActions?: boolean
+  /** The icon beside the title: a warning by default for confirmations, a cross for destructive ones. */
+  tone?: 'warning' | 'danger'
+}
+
+export interface Maintenance {
+  on: boolean
+  message: string
+  etaMinutes: number
 }
 
 export interface DrawerSpec {
@@ -38,8 +48,16 @@ interface Store {
   toggleDark: () => void
   collapsed: boolean
   toggleCollapsed: () => void
-  toast: (message: string) => void
+  toast: (message: string, kind?: 'success' | 'error') => void
   toastMessage: string
+  toastKind: 'success' | 'error'
+  /** The browser lost its connection (or an owner is previewing it). */
+  offline: boolean
+  setForceOffline: (on: boolean) => void
+  maintenance: Maintenance
+  setMaintenance: (m: Maintenance) => void
+  requestAccess: (what: string) => void
+  requestedAccess: string[]
   drawer: DrawerSpec | null
   openDrawer: (d: DrawerSpec) => void
   closeDrawer: () => void
@@ -150,6 +168,19 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [dark, setDark] = useState(readDark)
   const [collapsed, setCollapsed] = useState(false)
   const [toastMessage, setToastMessage] = useState('')
+  const [toastKind, setToastKind] = useState<'success' | 'error'>('success')
+  const [online, setOnline] = useState(() => (typeof navigator === 'undefined' ? true : navigator.onLine))
+  const [forceOffline, setForceOffline] = useState(false)
+  const [requestedAccess, setRequestedAccess] = useState<string[]>([])
+  const [maintenance, setMaintenanceState] = useState<Maintenance>(() => {
+    try {
+      const raw = localStorage.getItem('shopcore-maintenance')
+      if (raw) return JSON.parse(raw) as Maintenance
+    } catch {
+      /* start with it off */
+    }
+    return { on: false, message: '', etaMinutes: 15 }
+  })
   const toastTimer = useRef<ReturnType<typeof setTimeout>>(undefined)
   const [drawer, setDrawer] = useState<DrawerSpec | null>(null)
   const [modal, setModal] = useState<ModalSpec | null>(null)
@@ -220,10 +251,38 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => () => clearTimeout(toastTimer.current), [])
 
-  const toast = useCallback((message: string) => {
+  useEffect(() => {
+    const up = () => setOnline(true)
+    const down = () => setOnline(false)
+    window.addEventListener('online', up)
+    window.addEventListener('offline', down)
+    return () => {
+      window.removeEventListener('online', up)
+      window.removeEventListener('offline', down)
+    }
+  }, [])
+
+  const setMaintenance = useCallback((m: Maintenance) => {
+    setMaintenanceState(m)
+    try {
+      localStorage.setItem('shopcore-maintenance', JSON.stringify(m))
+    } catch {
+      /* private mode: it just won't survive a refresh */
+    }
+  }, [])
+
+  const toast = useCallback((message: string, kind?: 'success' | 'error') => {
+    // Messages that explain why something didn't happen read as errors even when the caller didn't say so.
+    const looksWrong = /(^(Enter|Choose|Add|Fix|Check|Select|Pick|Write|Name|Describe|Use|Give|Count|Pack|Mark all|Turn on) )|can’t|cannot|couldn’t|failed|not enough|no access|isn’t|doesn’t|already|must be|needs? /i.test(message)
+    setToastKind(kind ?? (looksWrong ? 'error' : 'success'))
     setToastMessage(message)
     clearTimeout(toastTimer.current)
     toastTimer.current = setTimeout(() => setToastMessage(''), 2400)
+  }, [])
+
+  useEffect(() => {
+    setLeavePrompt((proceed) => setModal({ title: 'Discard unsaved changes?', message: 'Your edits haven’t been saved. If you leave now, they will be lost.', confirm: 'Discard changes', cancelLabel: 'Keep editing', tone: 'warning', onConfirm: proceed }))
+    return () => setLeavePrompt(null)
   }, [])
 
   const userName = staff.find((x) => x.id === userId)?.name ?? 'Amara Mwangi'
@@ -231,6 +290,12 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     const at = Date.now()
     setAudit((a) => [{ id: `a${at}`, user: userName, action, module, at, when: whenLabel(at), type }, ...a])
   }, [userName])
+
+  const requestAccess = useCallback((what: string) => {
+    setRequestedAccess((l) => (l.includes(what) ? l : [...l, what]))
+    log(`Asked for access to ${what}`, 'Access', 'Access')
+    toast('Access request sent to your workspace owner', 'success')
+  }, [log, toast])
 
   const addStaff = useCallback(
     (s: Omit<Staff, 'id' | 'lastActive' | 'status' | 'mustChange'>) => {
@@ -305,12 +370,12 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   const value = useMemo<Store>(
     () => ({
-      role, user, login, logout, passwords, setPassword, previewRole, setPreviewRole, can, orders, setOrders, failures, setFailures, incidents, setIncidents, shifts, setShifts, assignRider, products, setProducts, categories, setCategories, riders, setRiders, transactions, payouts, setPayouts, deposits, setDeposits, dark, toggleDark: () => setDark((d) => !d), collapsed, toggleCollapsed: () => setCollapsed((c) => !c), toast, toastMessage,
+      role, user, login, logout, passwords, setPassword, previewRole, setPreviewRole, can, orders, setOrders, failures, setFailures, incidents, setIncidents, shifts, setShifts, assignRider, products, setProducts, categories, setCategories, riders, setRiders, transactions, payouts, setPayouts, deposits, setDeposits, dark, toggleDark: () => setDark((d) => !d), collapsed, toggleCollapsed: () => setCollapsed((c) => !c), toast, toastMessage, toastKind, offline: !online || forceOffline, setForceOffline, maintenance, setMaintenance, requestAccess, requestedAccess,
       drawer, openDrawer: setDrawer, closeDrawer: () => setDrawer(null), modal, openModal: setModal, closeModal: () => setModal(null),
       staff, addStaff, resetPassword, completeFirstSignIn, canManageStaff, updateStaff, customers, addNote, updateCustomer, audit, log, permissions, setPermissions, zones, setZones, business, setBusiness, payments, setPayments,
       templates, setTemplates, integrations, setIntegrations, keys, setKeys, backups, addBackup, autoBackup, setAutoBackup,
     }),
-    [role, user, login, logout, passwords, setPassword, previewRole, can, orders, failures, incidents, shifts, assignRider, products, categories, riders, transactions, payouts, deposits, dark, collapsed, toast, toastMessage, drawer, modal, staff, addStaff, resetPassword, completeFirstSignIn, canManageStaff, updateStaff, customers, addNote, updateCustomer, audit, log, permissions, setPermissions, zones, business, payments, templates, integrations, keys, backups, addBackup, autoBackup],
+    [role, user, login, logout, passwords, setPassword, previewRole, can, orders, failures, incidents, shifts, assignRider, products, categories, riders, transactions, payouts, deposits, dark, collapsed, toast, toastMessage, toastKind, online, forceOffline, maintenance, setMaintenance, requestAccess, requestedAccess, drawer, modal, staff, addStaff, resetPassword, completeFirstSignIn, canManageStaff, updateStaff, customers, addNote, updateCustomer, audit, log, permissions, setPermissions, zones, business, payments, templates, integrations, keys, backups, addBackup, autoBackup],
   )
 
   return <StoreContext value={value}>{children}</StoreContext>

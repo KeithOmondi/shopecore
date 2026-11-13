@@ -183,7 +183,7 @@ export function CustomerDetail({ id }: { id: string }) {
           <section className="card table-card">
             <div className="table-head">
               <h2>Recent orders</h2>
-              <Btn small onClick={() => navigate(`/orders?customer=${c.id}`)}>View all</Btn>
+              {can('Orders', 'View') && <Btn small onClick={() => navigate(`/orders?customer=${c.id}`)}>View all</Btn>}
             </div>
             <div className="table-wrap">
               <table>
@@ -191,7 +191,7 @@ export function CustomerDetail({ id }: { id: string }) {
                 <tbody>
                   {theirs.map((o) => (
                     <tr key={o.id}>
-                      <td><button className="link-btn" onClick={() => navigate(`/orders/${o.id}`)}>{o.id}</button></td>
+                      <td>{can('Orders', 'View') ? <button className="link-btn" onClick={() => navigate(`/orders/${o.id}`)}>{o.id}</button> : o.id}</td>
                       <td>{dateTime(o.placedAt)}</td>
                       <td>{kes(o.total)}</td>
                       <td><Badge tone={o.status === 'Delivered' ? 'green' : o.status === 'Cancelled' || o.status === 'Refunded' ? 'red' : 'amber'}>{o.status}</Badge></td>
