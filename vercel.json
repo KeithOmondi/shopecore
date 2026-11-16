@@ -4,8 +4,8 @@
   "buildCommand": "npm run build",
   "outputDirectory": "dist",
   "rewrites": [
-    { "source": "/v1/:path*", "destination": "https://shopcore-api.onrender.com/v1/:path*" },
-    { "source": "/health/:path*", "destination": "https://shopcore-api.onrender.com/health/:path*" },
+    { "source": "/v1/:path*", "destination": "https://shopcoreserver.onrender.com/v1/:path*" },
+    { "source": "/health/:path*", "destination": "https://shopcoreserver.onrender.com/health/:path*" },
     { "source": "/(.*)", "destination": "/index.html" }
   ],
   "headers": [
