@@ -1,532 +1,343 @@
 import { useState } from 'react'
 
-import { Bars, MonthSelect, monthOptions, saveRows, Stats } from '../components/finance-ui'
-import { Detail, NotFoundCard, useNow, when } from '../components/support-ui'
-import { PermissionDenied } from '../components/states'
-import { Badge, Btn, DataTable, Field, Notice, PageHead, Panel, Stat, type Column } from '../components/ui'
-import {
-  EXPORT_DATASETS, EXPORT_FORMATS, EXPENSE_CATEGORIES, invoiceBalance, invoicePaid, invoiceStatus, invoiceSubtotal, invoiceTotal, invoiceVat, monthEnd, monthKey, monthLabel, monthStart, runTotals,
-  type Expense, type ExportDataset, type ExportJob, type Invoice, type InvoiceLine, type InvoiceStatus,
-} from '../data/finance'
-import { dayKey, dateTime, kes } from '../lib/format'
-import { computePnl, pctOf } from '../lib/finance-calc'
-import { useFinance, vatIn } from '../lib/finance'
+import { Badge, Btn, DataTable, Field, Notice, PageHead, Panel, SettingRow, Stat, type Column } from '../components/ui'
+import { ApiError, del, patch, post, postForText } from '../lib/api'
+import { dateTime, kes } from '../lib/format'
 import { navigate } from '../lib/router'
 import { useStore } from '../lib/store'
-import { useDirty, useUnsavedGuard } from '../lib/unsaved'
+import { useGet } from '../lib/use-get'
 
-const DAY = 86_400_000
-const invTone = (s: InvoiceStatus) => (s === 'Paid' ? 'green' : s === 'Overdue' ? 'red' : s === 'Draft' ? 'gray' : 'blue')
+const says = (e: unknown) => (e instanceof ApiError ? e.message : 'Something went wrong. Try again.')
+const shillings = (c: number) => c / 100
+const money = (c: number) => kes(shillings(c))
+const monthName = (m: string) => new Date(`${m}-01T12:00:00`).toLocaleString('en-GB', { month: 'long', year: 'numeric' })
+const thisMonth = () => new Date().toISOString().slice(0, 7)
 
-// ---- invoices ----------------------------------------------------------------------------------------------------
+// ---- invoices -------------------------------------------------------------------------------------------------------
+
+interface Invoice { id: string; number: string; customer: string; contact: string; email: string; pin: string; address: string; issuedAt: string; dueAt: string; vatRate: number; draft: boolean; createdBy: string; version: number; subtotalCents: number; vatCents: number; totalCents: number; paidCents: number; balanceCents: number; status: 'Draft' | 'Sent' | 'Partly paid' | 'Paid' | 'Overdue' }
+interface InvoiceFull extends Invoice { lines: { description: string; quantity: number; unitCents: number; amountCents: number }[]; payments: { amountCents: number; method: string; ref: string; by: string; at: string }[]; reminders: { at: string; by: string }[] }
+const invTone = (s: Invoice['status']) => (s === 'Paid' ? 'green' : s === 'Overdue' ? 'red' : s === 'Draft' ? 'gray' : 'amber')
 
 export function InvoicesList() {
-  const f = useFinance()
-  const { can, toast } = useStore()
-  const now = useNow()
-  const [status, setStatus] = useState('All invoice statuses')
-  const live = f.invoices.filter((i) => !i.draft)
-  const rows = f.invoices.filter((i) => status === 'All invoice statuses' || invoiceStatus(i, now) === status)
+  const { can } = useStore()
+  const [status, setStatus] = useState('')
+  const { data, failed, loading, reload } = useGet<{ items: Invoice[]; outstandingCents: number; overdueCents: number; overdueCount: number }>(`/v1/admin/invoices?limit=300${status ? `&status=${encodeURIComponent(status)}` : ''}`, 60_000)
   const cols: Column<Invoice>[] = [
-    { key: 'id', header: 'Invoice', sort: (a, b) => a.id.localeCompare(b.id), render: (i) => <button className="sp-link" onClick={() => navigate(`/finance/invoices/${i.id}`)}>{i.id}</button> },
-    { key: 'c', header: 'Business', sort: (a, b) => a.customer.localeCompare(b.customer), render: (i) => i.customer },
-    { key: 'is', header: 'Issued', sort: (a, b) => a.issued - b.issued, render: (i) => dateTime(i.issued).replace(/, .*/, '') },
-    { key: 'd', header: 'Due', render: (i) => dateTime(i.due).replace(/, .*/, '') },
-    { key: 'a', header: 'Amount', sort: (a, b) => invoiceTotal(a) - invoiceTotal(b), render: (i) => kes(invoiceTotal(i)) },
-    { key: 'b', header: 'Balance', render: (i) => <b>{kes(invoiceBalance(i))}</b> },
-    { key: 's', header: 'Status', render: (i) => <Badge tone={invTone(invoiceStatus(i, now))}>{invoiceStatus(i, now)}</Badge> },
+    { key: 'n', header: 'Invoice', render: (i) => <button className="link-btn" onClick={() => navigate(`/finance/invoices/${i.id}`)}>{i.number}</button> },
+    { key: 'c', header: 'Customer', render: (i) => <div><b>{i.customer}</b><div className="subtext">{i.contact}</div></div> },
+    { key: 'd', header: 'Due', sort: (a, b) => Date.parse(a.dueAt) - Date.parse(b.dueAt), render: (i) => dateTime(Date.parse(i.dueAt)).split(',')[0] },
+    { key: 't', header: 'Total', sort: (a, b) => a.totalCents - b.totalCents, render: (i) => <b>{money(i.totalCents)}</b> },
+    { key: 'b', header: 'Balance', render: (i) => money(i.balanceCents) },
+    { key: 's', header: 'Status', render: (i) => <Badge tone={invTone(i.status)}>{i.status}</Badge> },
   ]
   return (
     <>
-      <PageHead title="Invoices list" desc="Issue and track business invoices, payment status and outstanding balances." actions={<><Btn disabled={!can('Payments', 'Export')} onClick={() => { saveRows('invoices', ['Invoice', 'Business', 'Issued', 'Due', 'Total', 'Balance', 'Status'], f.invoices.map((i) => [i.id, i.customer, new Date(i.issued).toISOString().slice(0, 10), new Date(i.due).toISOString().slice(0, 10), invoiceTotal(i), invoiceBalance(i), invoiceStatus(i, now)]), 'CSV'); toast('Invoices exported') }}>Export</Btn><Btn variant="primary" disabled={!can('Payments', 'Create')} onClick={() => navigate('/finance/invoices/new')}>+ Create invoice</Btn></>} />
-      <Stats>
-        <Stat label="Outstanding" value={kes(live.reduce((n, i) => n + invoiceBalance(i), 0))} trend={`${live.filter((i) => invoiceBalance(i) > 0).length} invoices`} icon="₭" />
-        <Stat label="Overdue" value={kes(live.filter((i) => invoiceStatus(i, now) === 'Overdue').reduce((n, i) => n + invoiceBalance(i), 0))} trend={`${live.filter((i) => invoiceStatus(i, now) === 'Overdue').length} invoices`} icon="!" up={false} />
-        <Stat label="Collected" value={kes(live.reduce((n, i) => n + invoicePaid(i), 0))} trend="Payments recorded" icon="✓" />
-        <Stat label="Drafts" value={String(f.invoices.filter((i) => i.draft).length)} trend="Not sent yet" icon="✎" />
-      </Stats>
-      <DataTable title="Invoices" rows={rows} rowKey={(i) => i.id} columns={cols} searchLabel="Search invoice or business" emptyTitle="No invoices yet" empty="Create an invoice to bill a business account." emptyAction={can('Payments', 'Create') ? { label: 'Create an invoice', onClick: () => navigate('/finance/invoices/new') } : undefined} searchText={(i) => `${i.id} ${i.customer} ${i.contact}`}
-        tools={<select className="sp-select auto" aria-label="Invoice status" value={status} onChange={(e) => setStatus(e.target.value)}><option>All invoice statuses</option>{['Draft', 'Sent', 'Partly paid', 'Paid', 'Overdue'].map((s) => <option key={s}>{s}</option>)}</select>}
+      <PageHead title="Invoices" desc="Invoices for business customers." actions={<><Btn onClick={reload}>Refresh</Btn><Btn variant="primary" disabled={!can('Payments', 'Create')} onClick={() => navigate('/finance/invoices/new')}>New invoice</Btn></>} />
+      <div className="tile-row"><Stat label="Outstanding" value={data ? money(data.outstandingCents) : '—'} trend="Not yet paid" icon="◈" /><Stat label="Overdue" value={data ? money(data.overdueCents) : '—'} trend={`${data?.overdueCount ?? 0} invoices`} icon="!" up={(data?.overdueCount ?? 0) === 0} /></div>
+      <DataTable title="Invoices" rows={data?.items ?? []} rowKey={(i) => i.id} columns={cols} loading={loading} error={failed && !data ? 'We couldn’t load the invoices.' : undefined} onRetry={reload} searchLabel="Search invoices" searchText={(i) => `${i.number} ${i.customer} ${i.contact}`} emptyTitle="No invoices yet" empty="Create an invoice for a business customer."
+        tools={<select className="select" aria-label="Status" value={status} onChange={(e) => setStatus(e.target.value)}><option value="">All</option>{['Draft', 'Sent', 'Partly paid', 'Paid', 'Overdue'].map((s) => <option key={s}>{s}</option>)}</select>}
         actions={(i) => <Btn small onClick={() => navigate(`/finance/invoices/${i.id}`)}>Open</Btn>} />
     </>
   )
 }
 
 export function InvoiceForm() {
-  const f = useFinance()
-  const { toast, business } = useStore()
-  const [customer, setCustomer] = useState('')
-  const [contact, setContact] = useState('')
-  const [email, setEmail] = useState('')
-  const [pin, setPin] = useState('')
-  const [address, setAddress] = useState('')
-  const [terms, setTerms] = useState('30')
-  const [lines, setLines] = useState<{ desc: string; qty: string; unit: string }[]>([{ desc: '', qty: '1', unit: '' }])
-  const [err, setErr] = useState<Record<string, string>>({})
-  const unsaved = useUnsavedGuard(useDirty({ customer, contact, email, pin, address, terms, lines }))
-  const parsed: InvoiceLine[] = lines.map((l) => ({ desc: l.desc.trim(), qty: Number(l.qty), unit: Number(l.unit) }))
-  const sub = parsed.reduce((n, l) => n + (l.qty > 0 && l.unit > 0 ? l.qty * l.unit : 0), 0)
-  const vatRate = Number(business.vat) || 16
-  const setLine = (i: number, k: 'desc' | 'qty' | 'unit', v: string) => setLines(lines.map((l, x) => (x === i ? { ...l, [k]: v } : l)))
-  const save = (draft: boolean) => {
+  const { can, toast } = useStore()
+  const [f, setF] = useState({ customer: '', contact: '', email: '', pin: '', address: '', dueInDays: '30' })
+  const [lines, setLines] = useState([{ description: '', quantity: '1', unit: '' }])
+  const [errors, setErrors] = useState<Record<string, string>>({})
+  const [busy, setBusy] = useState(false)
+  const set = (k: keyof typeof f) => (v: string) => setF((x) => ({ ...x, [k]: v }))
+  const sub = lines.reduce((n, l) => n + (Number(l.quantity) || 0) * (Number(l.unit) || 0), 0)
+  const save = async (draft: boolean) => {
     const e: Record<string, string> = {}
-    if (!customer.trim()) e.customer = 'Enter the business name'
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email.trim())) e.email = 'Enter a valid billing email'
-    if (parsed.some((l) => !l.desc || !(l.qty > 0) || !(l.unit > 0))) e.lines = 'Every line needs a description, a quantity and a price'
-    setErr(e)
+    if (!f.customer.trim()) e.customer = 'Who is this for?'
+    if (f.email && !/^\S+@\S+\.\S+$/.test(f.email)) e.email = 'Enter a valid email'
+    const clean = lines.filter((l) => l.description.trim() || l.unit)
+    if (!clean.length) e.lines = 'Add at least one line'
+    if (clean.some((l) => !l.description.trim() || !Number.isInteger(Number(l.quantity)) || Number(l.quantity) < 1 || !(Number(l.unit) >= 0) || l.unit === '')) e.lines = 'Each line needs a description, a whole quantity and a price'
+    setErrors(e)
     if (Object.keys(e).length) return
-    const now = Date.now()
-    const id = f.addInvoice({ customer: customer.trim(), contact: contact.trim(), email: email.trim(), pin: pin.trim(), address: address.trim() || 'Nairobi, Kenya', issued: now, due: now + Number(terms) * DAY, lines: parsed, vatRate, draft })
-    toast(draft ? 'Draft saved' : 'Invoice created')
-    unsaved()
-    navigate(`/finance/invoices/${id}`)
+    setBusy(true)
+    try { const r = await post<{ id: string }>('/v1/admin/invoices', { ...f, dueInDays: Number(f.dueInDays) || 30, draft, lines: clean.map((l) => ({ description: l.description.trim(), quantity: Number(l.quantity), unitCents: Math.round(Number(l.unit) * 100) })) }); toast(draft ? 'Draft saved' : 'Invoice created'); navigate(`/finance/invoices/${r.id}`) } catch (err) { setErrors({ form: says(err) }) } finally { setBusy(false) }
   }
+  if (!can('Payments', 'Create')) return <PageHead title="New invoice" desc="Your role can’t create invoices." actions={<Btn onClick={() => navigate('/finance/invoices')}>Back</Btn>} />
   return (
     <>
-      <PageHead title="Create invoice" desc="Bill a business account for orders and delivery fees." actions={<><Btn onClick={() => navigate('/finance/invoices')}>Cancel</Btn><Btn onClick={() => save(true)}>Save draft</Btn><Btn variant="primary" onClick={() => save(false)}>Create invoice</Btn></>} />
+      <PageHead title="New invoice" desc="VAT is added to the total." actions={<Btn onClick={() => navigate('/finance/invoices')}>Cancel</Btn>} />
+      {errors.form && <Notice tone="error" mark="!">{errors.form}</Notice>}
       <div className="sp-two">
-        <div className="sp-stack">
-          <Panel title="Bill to">
-            <div className="sp-form2"><Field label="Business name" value={customer} onChange={setCustomer} error={err.customer} /><Field label="Contact person" value={contact} onChange={setContact} /><Field label="Billing email" value={email} onChange={setEmail} error={err.email} /><Field label="KRA PIN" value={pin} onChange={setPin} /></div>
-            <Field label="Address" value={address} onChange={setAddress} />
-          </Panel>
-          <Panel title="Line items" right={<Btn small onClick={() => setLines([...lines, { desc: '', qty: '1', unit: '' }])}>+ Add line</Btn>}>
-            {lines.map((l, i) => (
-              <div key={i} style={{ display: 'grid', gridTemplateColumns: 'minmax(0,2fr) 80px 120px auto', gap: 8, marginBottom: 8, alignItems: 'end' }}>
-                <Field label={i === 0 ? 'Description' : ''} value={l.desc} onChange={(v) => setLine(i, 'desc', v)} />
-                <Field label={i === 0 ? 'Qty' : ''} value={l.qty} onChange={(v) => setLine(i, 'qty', v)} type="number" />
-                <Field label={i === 0 ? 'Unit price' : ''} value={l.unit} onChange={(v) => setLine(i, 'unit', v)} type="number" />
-                <Btn small disabled={lines.length === 1} onClick={() => setLines(lines.filter((_, x) => x !== i))} label="Remove line">×</Btn>
-              </div>
-            ))}
-            {err.lines && <div className="sp-err" role="alert">{err.lines}</div>}
-          </Panel>
-        </div>
-        <div className="sp-stack">
-          <Panel title="Terms and totals">
-            <Field label="Payment terms" value={terms} onChange={setTerms} options={[{ value: '14', label: 'Net 14 days' }, { value: '30', label: 'Net 30 days' }, { value: '45', label: 'Net 45 days' }]} />
-            <Detail label="Subtotal">{kes(sub)}</Detail>
-            <Detail label={`VAT (${vatRate}%)`}>{kes(Math.round(sub * (vatRate / 100)))}</Detail>
-            <div className="sp-detail"><span>Total due</span><b className="fin-total">{kes(sub + Math.round(sub * (vatRate / 100)))}</b></div>
-          </Panel>
-        </div>
+        <Panel title="Customer">
+          <Field label="Business or customer name" value={f.customer} onChange={set('customer')} error={errors.customer} />
+          <div className="sp-form2"><Field label="Contact person" value={f.contact} onChange={set('contact')} /><Field label="Email" value={f.email} onChange={set('email')} error={errors.email} /><Field label="KRA PIN" value={f.pin} onChange={set('pin')} /><Field label="Due in (days)" value={f.dueInDays} onChange={set('dueInDays')} /></div>
+          <Field label="Address" value={f.address} onChange={set('address')} />
+        </Panel>
+        <Panel title="Lines">
+          {lines.map((l, i) => (
+            <div key={i} style={{ display: 'flex', gap: 8, marginBottom: 6 }}>
+              <input style={{ flex: 1 }} aria-label="Description" placeholder="Description" value={l.description} onChange={(e) => setLines(lines.map((x, k) => (k === i ? { ...x, description: e.target.value } : x)))} />
+              <input className="qty" aria-label="Quantity" value={l.quantity} onChange={(e) => setLines(lines.map((x, k) => (k === i ? { ...x, quantity: e.target.value } : x)))} />
+              <input className="qty" aria-label="Unit price (KES)" placeholder="Price" value={l.unit} onChange={(e) => setLines(lines.map((x, k) => (k === i ? { ...x, unit: e.target.value } : x)))} />
+              <Btn small disabled={lines.length === 1} label="Remove line" onClick={() => setLines(lines.filter((_, k) => k !== i))}>×</Btn>
+            </div>
+          ))}
+          <Btn small onClick={() => setLines([...lines, { description: '', quantity: '1', unit: '' }])}>+ Add line</Btn>
+          {errors.lines && <div className="field-error">{errors.lines}</div>}
+          <SettingRow title="Subtotal" right={<b>{kes(sub)}</b>} />
+          <div className="sp-row end"><Btn disabled={busy} onClick={() => void save(true)}>Save draft</Btn><Btn variant="primary" disabled={busy} onClick={() => void save(false)}>Create invoice</Btn></div>
+        </Panel>
       </div>
-    </>
-  )
-}
-
-function PayForm({ inv }: { inv: Invoice }) {
-  const f = useFinance()
-  const { closeModal, toast } = useStore()
-  const [amount, setAmount] = useState(String(invoiceBalance(inv)))
-  const [method, setMethod] = useState('Bank transfer')
-  const [ref, setRef] = useState('')
-  const [err, setErr] = useState('')
-  return (
-    <>
-      <Field label="Amount received (KES)" type="number" value={amount} onChange={(v) => { setAmount(v); setErr('') }} hint={`Balance ${kes(invoiceBalance(inv))}`} />
-      <Field label="Method" value={method} onChange={setMethod} options={['Bank transfer', 'M-Pesa', 'Cheque', 'Cash']} />
-      <Field label="Reference" value={ref} onChange={(v) => { setRef(v); setErr('') }} error={err} />
-      <div className="sp-row end"><Btn onClick={closeModal}>Cancel</Btn><Btn variant="primary" onClick={() => { const n = Number(amount); if (!Number.isInteger(n) || n <= 0) return setErr('Enter the amount in whole shillings'); if (!ref.trim()) return setErr('Enter a reference'); const e = f.recordInvoicePayment(inv.id, { amount: n, method, ref: ref.trim() }); if (e) return setErr(e); closeModal(); toast('Payment recorded') }}>Record payment</Btn></div>
     </>
   )
 }
 
 export function InvoiceDetail({ id }: { id: string }) {
-  const f = useFinance()
-  const { openModal, toast, can } = useStore()
-  const now = useNow()
-  const inv = f.invoices.find((i) => i.id === id)
-  if (!inv) return <NotFoundCard what="Invoice" back="Back to invoices" onBack={() => navigate('/finance/invoices')} />
+  const { can, toast, openModal } = useStore()
+  const { data: i, failed, reload } = useGet<InvoiceFull>(`/v1/admin/invoices/${id}`)
+  const [amount, setAmount] = useState('')
+  const [method, setMethod] = useState('M-Pesa')
+  const [ref, setRef] = useState('')
+  const [err, setErr] = useState('')
+  if (!i) return <PageHead title="Invoice" desc={failed ? 'We couldn’t load this invoice.' : 'Loading…'} actions={<Btn onClick={() => navigate('/finance/invoices')}>Back</Btn>} />
   const edit = can('Payments', 'Edit')
-  const st = invoiceStatus(inv, now)
+  const run = async (what: () => Promise<unknown>, done: string) => { try { await what(); toast(done); reload() } catch (e) { toast(says(e)) } }
+  const pay = async () => {
+    const n = Number(amount)
+    if (!(n > 0) || Math.round(n * 100) > i.balanceCents) return setErr(`Enter an amount up to ${money(i.balanceCents)}`)
+    if (!ref.trim()) return setErr('Enter the payment reference')
+    try { await post(`/v1/admin/invoices/${id}/payments`, { amountCents: Math.round(n * 100), method, ref: ref.trim() }); setAmount(''); setRef(''); setErr(''); toast('Payment recorded'); reload() } catch (e) { setErr(says(e)) }
+  }
   return (
     <>
-      <PageHead title="Invoice detail" desc="Business account invoice with line items and payment history." actions={<><Btn onClick={() => navigate('/finance/invoices')}>← Invoices</Btn><Btn onClick={() => { saveRows(inv.id, ['Description', 'Qty', 'Unit price', 'Amount'], [...inv.lines.map((l) => [l.desc, l.qty, l.unit, l.qty * l.unit]), ['VAT', '', '', invoiceVat(inv)], ['Total', '', '', invoiceTotal(inv)]], 'CSV'); toast('Invoice downloaded') }}>Download</Btn><Btn onClick={() => window.print()}>Print</Btn>
-        {inv.draft ? <Btn variant="primary" disabled={!edit} onClick={() => { f.sendInvoice(inv.id); toast(`Invoice sent to ${inv.email}`) }}>Send invoice</Btn> : <><Btn disabled={!edit || invoiceBalance(inv) === 0} onClick={() => openModal({ title: 'Send invoice reminder?', message: `A payment reminder will be sent to ${inv.email}.`, confirm: 'Send reminder', onConfirm: () => { f.remindInvoice(inv.id); toast('Reminder sent') } })}>Send reminder</Btn><Btn variant="primary" disabled={!edit || invoiceBalance(inv) === 0} onClick={() => openModal({ title: `Record a payment for ${inv.id}`, body: <PayForm inv={inv} />, noActions: true })}>Record payment</Btn></>}</>} />
+      <PageHead title={i.number} desc={`${i.customer} · due ${dateTime(Date.parse(i.dueAt)).split(',')[0]}`}
+        actions={<>
+          <Btn onClick={() => navigate('/finance/invoices')}>Back</Btn>
+          <Btn onClick={() => window.print()}>Print</Btn>
+          {i.draft && <Btn variant="primary" disabled={!edit} onClick={() => void run(() => post(`/v1/admin/invoices/${id}/send`), 'Invoice sent')}>Send</Btn>}
+          {!i.draft && i.balanceCents > 0 && <Btn disabled={!edit} onClick={() => void run(() => post(`/v1/admin/invoices/${id}/remind`), 'Reminder sent')}>Send a reminder</Btn>}
+          {i.draft && <Btn variant="danger" disabled={!edit} onClick={() => openModal({ title: `Delete ${i.number}?`, confirm: 'Delete draft', danger: true, onConfirm: () => { void del(`/v1/admin/invoices/${id}`).then(() => { toast('Draft deleted'); navigate('/finance/invoices') }, (e) => toast(says(e))) } })}>Delete draft</Btn>}
+        </>} />
       <div className="sp-two">
+        <section className="card table-card">
+          <div className="table-head"><h2>Items</h2><Badge tone={invTone(i.status)}>{i.status}</Badge></div>
+          <div className="table-wrap"><table><thead><tr><th>Description</th><th>Qty</th><th>Price</th><th>Amount</th></tr></thead><tbody>{i.lines.map((l, k) => <tr key={k}><td>{l.description}</td><td>{l.quantity}</td><td>{money(l.unitCents)}</td><td><b>{money(l.amountCents)}</b></td></tr>)}</tbody></table></div>
+          <div style={{ padding: '10px 15px' }}><SettingRow title="Subtotal" right={<span className="prod-name">{money(i.subtotalCents)}</span>} /><SettingRow title={`VAT ${i.vatRate}%`} right={<span className="prod-name">{money(i.vatCents)}</span>} /><SettingRow title="Total" right={<b>{money(i.totalCents)}</b>} /><SettingRow title="Paid" right={<span className="prod-name">{money(i.paidCents)}</span>} /><SettingRow title="Balance" right={<b>{money(i.balanceCents)}</b>} /></div>
+        </section>
         <div className="sp-stack">
-          <Panel>
-            <div className="sp-row between"><div><b style={{ fontSize: 16, letterSpacing: '.5px' }}>SHOPCORE</b><div className="panel-sub">Tax invoice · {inv.id}</div></div><Badge tone={invTone(st)}>{st}</Badge></div>
-            <div className="sp-form2" style={{ margin: '16px 0' }}>
-              <div><div className="sp-label">Bill to</div><b>{inv.customer}</b><div className="panel-sub">{inv.address}<br />{inv.pin && <>PIN: {inv.pin}</>}</div></div>
-              <div><div className="sp-label">Invoice details</div><b>Issued {dateTime(inv.issued).replace(/, .*/, '')}</b><div className="panel-sub">Due {dateTime(inv.due).replace(/, .*/, '')}<br />Currency: KES</div></div>
-            </div>
-            <div className="table-wrap"><table><thead><tr><th>Description</th><th>Qty</th><th>Unit price</th><th className="fin-num">Amount</th></tr></thead>
-              <tbody>{inv.lines.map((l, i) => <tr key={i}><td>{l.desc}</td><td>{l.qty}</td><td>{kes(l.unit)}</td><td className="fin-num">{kes(l.qty * l.unit)}</td></tr>)}</tbody></table></div>
-            <div style={{ marginLeft: 'auto', maxWidth: 260, marginTop: 10 }}>
-              <Detail label="Subtotal">{kes(invoiceSubtotal(inv))}</Detail><Detail label={`VAT (${inv.vatRate}%)`}>{kes(invoiceVat(inv))}</Detail><Detail label="Total due">{kes(invoiceTotal(inv))}</Detail>
-            </div>
-          </Panel>
-          <Panel title="Payment history">
-            {inv.payments.map((p, i) => <div className="list-row" key={i}><div><b style={{ fontSize: 11 }}>{kes(p.amount)} · {p.method}</b><div className="panel-sub">Ref {p.ref} · {dateTime(p.at)}</div></div><Badge tone="green">Received</Badge></div>)}
-            {!inv.payments.length && <div className="list-row"><div><b style={{ fontSize: 11 }}>No payment recorded</b><div className="panel-sub">{inv.draft ? 'This invoice is still a draft.' : `Invoice sent to ${inv.email}`}</div></div><Badge tone="amber">Awaiting</Badge></div>}
-            {inv.reminders.map((r, i) => <div className="list-row" key={`r${i}`}><span className="panel-sub">Reminder sent {dateTime(r)}</span></div>)}
-          </Panel>
-        </div>
-        <div className="sp-stack">
-          <Panel title="Invoice status">
-            <Detail label="Invoice total">{kes(invoiceTotal(inv))}</Detail><Detail label="Amount paid">{kes(invoicePaid(inv))}</Detail>
-            <Detail label="Balance due"><span style={{ color: invoiceBalance(inv) ? 'var(--amber)' : 'var(--green)' }}>{kes(invoiceBalance(inv))}</span></Detail><Detail label="Due date">{dateTime(inv.due).replace(/, .*/, '')}</Detail>
-          </Panel>
-          <Panel title="Customer account"><b>{inv.customer}</b><div className="panel-sub">Business account</div><Detail label="Billing contact">{inv.contact || '—'}</Detail><Detail label="Contact email">{inv.email}</Detail></Panel>
+          <Panel title="Customer"><SettingRow title="Name" right={<span className="prod-name">{i.customer}</span>} /><SettingRow title="Contact" sub={i.email} right={<span className="prod-name">{i.contact || '—'}</span>} /><SettingRow title="KRA PIN" right={<span className="prod-name">{i.pin || '—'}</span>} /><SettingRow title="Address" sub={i.address} /></Panel>
+          {!i.draft && i.balanceCents > 0 && (
+            <Panel title="Record a payment">
+              <div className="sp-form2"><Field label="Amount (KES)" value={amount} onChange={(v) => { setAmount(v); setErr('') }} /><Field label="Method" value={method} onChange={setMethod} options={['M-Pesa', 'Bank transfer', 'Cheque', 'Cash']} /></div>
+              <Field label="Reference" value={ref} onChange={(v) => { setRef(v); setErr('') }} error={err} />
+              <div className="sp-row end"><Btn variant="primary" disabled={!edit} onClick={() => void pay()}>Record payment</Btn></div>
+            </Panel>
+          )}
+          <Panel title="Payments">{i.payments.length === 0 && <div className="panel-sub">None yet.</div>}{i.payments.map((p, k) => <SettingRow key={k} title={`${money(p.amountCents)} · ${p.method}`} sub={`${p.ref} · ${p.by} · ${dateTime(Date.parse(p.at))}`} />)}</Panel>
+          {i.reminders.length > 0 && <Panel title="Reminders">{i.reminders.map((r, k) => <SettingRow key={k} title={dateTime(Date.parse(r.at))} sub={r.by} />)}</Panel>}
         </div>
       </div>
     </>
   )
 }
 
-// ---- sales and delivery cost ---------------------------------------------------------------------------------------------
+// ---- reports --------------------------------------------------------------------------------------------------------
+
+interface Sales { from: string; to: string; orders: number; totalCents: number; averageCents: number; byDay: { day: string; orders: number; totalCents: number }[]; byCategory: { name: string; totalCents: number }[]; byArea: { area: string; orders: number; totalCents: number }[]; topProducts: { name: string; units: number; totalCents: number }[] }
 
 export function SalesReports() {
-  const { orders, products, can, toast } = useStore()
-  const now = useNow()
-  const [days, setDays] = useState(30)
-  const [area, setArea] = useState('All areas')
-  const since = now - days * DAY
-  const sold = orders.filter((o) => o.status !== 'Cancelled' && o.placedAt >= since && (area === 'All areas' || o.area === area))
-  const gross = sold.reduce((n, o) => n + o.total, 0)
-  const units = sold.reduce((n, o) => n + o.items.reduce((m, i) => m + i.qty, 0), 0)
-  const dayList = Array.from({ length: days }, (_, i) => dayKey(now - (days - 1 - i) * DAY))
-  const byDay = dayList.map((d) => sold.filter((o) => dayKey(o.placedAt) === d).reduce((n, o) => n + o.total, 0))
-  const cat = new Map<string, number>()
-  const prod = new Map<string, number>()
-  const where = new Map<string, number>()
-  for (const o of sold) {
-    where.set(o.area, (where.get(o.area) ?? 0) + o.total)
-    for (const i of o.items) {
-      const c = products.find((p) => p.id === i.productId)?.category ?? 'Other'
-      cat.set(c, (cat.get(c) ?? 0) + i.price * i.qty)
-      prod.set(i.name, (prod.get(i.name) ?? 0) + i.price * i.qty)
-    }
-  }
-  const top = (m: Map<string, number>, n: number) => [...m.entries()].sort((a, b) => b[1] - a[1]).slice(0, n)
-  const areas = [...new Set(orders.map((o) => o.area))].sort()
-  const maxArea = Math.max(1, ...where.values())
-  const catTotal = [...cat.values()].reduce((n, v) => n + v, 0)
+  const [from, setFrom] = useState(() => new Date(Date.now() - 29 * 86_400_000).toISOString().slice(0, 10))
+  const [to, setTo] = useState(() => new Date().toISOString().slice(0, 10))
+  const { data: s, failed, reload } = useGet<Sales>(`/v1/admin/reports/sales?from=${from}&to=${to}`)
+  const max = Math.max(1, ...(s?.byDay.map((d) => d.totalCents) ?? [1]))
   return (
     <>
-      <PageHead title="Sales reports" desc="Analyse sales by date, product, category and delivery area." actions={<><Btn disabled={!can('Payments', 'Export')} onClick={() => { saveRows('sales-report', ['Order', 'Date', 'Area', 'Customer', 'Total (KES)'], sold.map((o) => [o.id, new Date(o.placedAt).toISOString().slice(0, 10), o.area, o.customer, o.total]), 'CSV'); toast('Sales report exported') }}>Export report</Btn><Btn variant="primary" onClick={() => navigate('/finance/exports')}>Export center</Btn></>} />
-      <div className="sp-row" style={{ marginBottom: 12 }}>
-        <select className="sp-select auto" aria-label="Date range" value={days} onChange={(e) => setDays(Number(e.target.value))}><option value={7}>Last 7 days</option><option value={30}>Last 30 days</option></select>
-        <select className="sp-select auto" aria-label="Area" value={area} onChange={(e) => setArea(e.target.value)}><option>All areas</option>{areas.map((a) => <option key={a}>{a}</option>)}</select>
-      </div>
-      <Stats>
-        <Stat label="Gross sales" value={kes(gross)} trend="VAT included" icon="↗" />
-        <Stat label="Orders" value={sold.length.toLocaleString('en-US')} trend={`${sold.filter((o) => o.status === 'Delivered').length} delivered`} icon="▤" />
-        <Stat label="Average order value" value={kes(sold.length ? gross / sold.length : 0)} trend="Per order" icon="₭" />
-        <Stat label="Units sold" value={units.toLocaleString('en-US')} trend={`${prod.size} products`} icon="▦" />
-      </Stats>
-      <div className="sp-two">
-        <div className="sp-stack">
-          <Panel title="Sales by day" sub="Gross value · KES"><Bars values={byDay} labels={dayList.map((d) => d.slice(5))} /></Panel>
-          <Panel title="Top categories" sub="Share of product sales">
-            {top(cat, 6).map(([n, v]) => <div className="list-row" key={n}><div><b style={{ fontSize: 11 }}>{n}</b><div className="panel-sub">{kes(v)}</div></div><b>{pctOf(v, catTotal)}</b></div>)}
-            {!cat.size && <p className="panel-sub">No sales in this range.</p>}
-          </Panel>
-        </div>
-        <div className="sp-stack">
-          <Panel title="Sales by area" sub="Top delivery areas">
-            {top(where, 6).map(([n, v]) => <div className="list-row" key={n}><div style={{ flex: 1 }}><b style={{ fontSize: 11 }}>{n}</b><div className="panel-sub">{kes(v)}</div><div className="progress" style={{ marginTop: 6 }}><i style={{ width: `${(v / maxArea) * 100}%` }} /></div></div></div>)}
-          </Panel>
-          <Panel title="Top products">{top(prod, 5).map(([n, v]) => <Detail key={n} label={n}>{kes(v)}</Detail>)}</Panel>
-        </div>
-      </div>
+      <PageHead title="Sales reports" desc="What sold, where, and when." actions={<><Field label="" type="date" value={from} onChange={setFrom} /><Field label="" type="date" value={to} onChange={setTo} /><Btn onClick={reload}>Refresh</Btn></>} />
+      {!s && <div className="panel-sub">{failed ? 'We couldn’t load the report.' : 'Loading…'}</div>}
+      {s && (
+        <>
+          <div className="tile-row"><Stat label="Sales" value={money(s.totalCents)} trend={`${s.orders} orders`} icon="↗" /><Stat label="Average order" value={money(s.averageCents)} trend="Per paid order" icon="◈" /></div>
+          <Panel title="Sales by day"><div style={{ display: 'flex', alignItems: 'flex-end', gap: 2, height: 110 }}>{s.byDay.map((d) => <div key={d.day} title={`${d.day}: ${money(d.totalCents)}`} style={{ flex: 1, background: 'var(--blue)', borderRadius: 2, height: `${Math.max(2, (d.totalCents / max) * 100)}%` }} />)}</div>{s.byDay.length === 0 && <div className="panel-sub">No sales in this period.</div>}</Panel>
+          <div className="sp-two" style={{ marginTop: 14 }}>
+            <Panel title="Top products">{s.topProducts.map((p) => <SettingRow key={p.name} title={p.name} sub={`${p.units} sold`} right={<b>{money(p.totalCents)}</b>} />)}</Panel>
+            <Panel title="By category">{s.byCategory.map((c) => <SettingRow key={c.name} title={c.name} right={<b>{money(c.totalCents)}</b>} />)}</Panel>
+            <Panel title="By area">{s.byArea.map((a) => <SettingRow key={a.area} title={a.area} sub={`${a.orders} orders`} right={<b>{money(a.totalCents)}</b>} />)}</Panel>
+          </div>
+        </>
+      )}
     </>
   )
 }
 
 export function DeliveryCost() {
-  const { orders, zones, can, toast } = useStore()
-  const f = useFinance()
-  const now = useNow()
-  const [mk, setMk] = useState(monthKey(now))
-  const k = 1 + f.vatRate / 100
-  const done = orders.filter((o) => o.status === 'Delivered' && monthKey(o.placedAt) === mk)
-  const areas = [...new Set(done.map((o) => o.area))]
-  const rows = areas.map((a) => {
-    const os = done.filter((o) => o.area === a)
-    const share = (zones.find((z) => z.name === a)?.commission ?? 85) / 100
-    const fees = os.reduce((n, o) => n + o.fee, 0) / k
-    const rider = os.reduce((n, o) => n + o.fee * share, 0)
-    return { area: a, n: os.length, fees, rider, margin: fees - rider, share }
-  }).sort((a, b) => b.n - a.n)
-  const totals = rows.reduce((t, r) => ({ n: t.n + r.n, fees: t.fees + r.fees, rider: t.rider + r.rider }), { n: 0, fees: 0, rider: 0 })
-  const low = rows.filter((r) => r.margin / Math.max(1, r.fees) < 0.05)
-  const cols: Column<(typeof rows)[number]>[] = [
-    { key: 'a', header: 'Area', sort: (a, b) => a.area.localeCompare(b.area), render: (r) => <b>{r.area}</b> },
-    { key: 'n', header: 'Deliveries', sort: (a, b) => a.n - b.n, render: (r) => r.n },
-    { key: 'f', header: 'Customer fees (ex VAT)', render: (r) => kes(r.fees) },
-    { key: 'r', header: `Rider payouts`, render: (r) => `${kes(r.rider)} (${Math.round(r.share * 100)}%)` },
-    { key: 'm', header: 'Net margin', sort: (a, b) => a.margin - b.margin, render: (r) => kes(r.margin) },
-    { key: 'p', header: 'Margin', render: (r) => <Badge tone={r.margin / Math.max(1, r.fees) < 0.05 ? 'red' : 'green'}>{pctOf(r.margin, r.fees)}</Badge> },
+  const [month, setMonth] = useState(thisMonth)
+  const { data, failed, loading, reload } = useGet<{ month: string; items: { area: string; deliveries: number; feesCents: number; riderPayCents: number; marginCents: number }[]; totals: { deliveries: number; feesCents: number; riderPayCents: number; marginCents: number } }>(`/v1/admin/reports/delivery-cost?month=${month}`)
+  type R = NonNullable<typeof data>['items'][number]
+  const cols: Column<R>[] = [
+    { key: 'a', header: 'Area', render: (r) => r.area }, { key: 'd', header: 'Deliveries', render: (r) => r.deliveries },
+    { key: 'f', header: 'Fees (without VAT)', render: (r) => money(r.feesCents) }, { key: 'r', header: 'Paid to riders', render: (r) => money(r.riderPayCents) },
+    { key: 'm', header: 'Margin', render: (r) => <b style={{ color: r.marginCents < 0 ? 'var(--red)' : undefined }}>{money(r.marginCents)}</b> },
   ]
   return (
     <>
-      <PageHead title="Delivery cost report" desc="Compare rider costs, delivery fees and margin by delivery area." actions={<><MonthSelect value={mk} onChange={setMk} now={now} /><Btn disabled={!can('Payments', 'Export')} onClick={() => { saveRows('delivery-cost', ['Area', 'Deliveries', 'Fees ex VAT', 'Rider payouts', 'Margin'], rows.map((r) => [r.area, r.n, Math.round(r.fees), Math.round(r.rider), Math.round(r.margin)]), 'CSV'); toast('Report exported') }}>Export</Btn></>} />
-      <Stats>
-        <Stat label="Delivery revenue" value={kes(totals.fees)} trend={`${totals.n} completed deliveries`} icon="↗" />
-        <Stat label="Rider payouts" value={kes(totals.rider)} trend={`About ${kes(totals.rider / Math.max(1, totals.n))} per delivery`} icon="⇧" />
-        <Stat label="Net delivery margin" value={kes(totals.fees - totals.rider)} trend={`${pctOf(totals.fees - totals.rider, totals.fees)} blended`} icon="%" up={totals.fees - totals.rider > 0} />
-      </Stats>
-      {low.length > 0 && <div style={{ marginBottom: 12 }}><Notice tone="warning" mark="!"><b>Margin watch:</b> {low.map((r) => r.area).join(', ')} keep less than 5% of the delivery fee. Review the zone fee and rider share in Delivery settings.</Notice></div>}
-      <DataTable title="Margin by area" rows={rows} rowKey={(r) => r.area} columns={cols} searchLabel="Search delivery area" searchText={(r) => r.area} empty="No delivered orders in this month." />
+      <PageHead title="Delivery cost report" desc="What deliveries earn against what riders are paid." actions={<><Field label="" type="month" value={month} onChange={setMonth} /><Btn onClick={reload}>Refresh</Btn></>} />
+      {data && <div className="tile-row"><Stat label="Deliveries" value={String(data.totals.deliveries)} trend={monthName(month)} icon="⌖" /><Stat label="Fees" value={money(data.totals.feesCents)} trend="Without VAT" icon="↗" /><Stat label="Rider pay" value={money(data.totals.riderPayCents)} trend="Fares, bonuses and tips" icon="◈" /><Stat label="Margin" value={money(data.totals.marginCents)} trend="Fees minus rider pay" icon="=" /></div>}
+      <DataTable title="By area" rows={data?.items ?? []} rowKey={(r) => r.area} columns={cols} loading={loading} error={failed && !data ? 'We couldn’t load the report.' : undefined} onRetry={reload} searchLabel="Search areas" searchText={(r) => r.area} emptyTitle="No deliveries" empty="Delivered orders appear here." />
     </>
   )
 }
 
-// ---- expenses ---------------------------------------------------------------------------------------------------------------
+// ---- expenses -------------------------------------------------------------------------------------------------------
 
-function ExpenseForm() {
-  const f = useFinance()
+interface Expense { id: string; number: string; date: string; category: string; payee: string; description: string; amountCents: number; status: 'pending' | 'approved' | 'rejected'; by: string; decidedBy: string | null; note: string }
+
+function ExpenseForm({ categories, onDone }: { categories: string[]; onDone: () => void }) {
   const { closeModal, toast } = useStore()
-  const [date, setDate] = useState(() => new Date().toLocaleDateString('en-CA'))
-  const [category, setCategory] = useState<string>(EXPENSE_CATEGORIES[0])
-  const [payee, setPayee] = useState('')
-  const [description, setDescription] = useState('')
-  const [amount, setAmount] = useState('')
-  const [err, setErr] = useState<Record<string, string>>({})
-  const submit = () => {
-    const e: Record<string, string> = {}
-    const n = Number(amount)
-    if (!payee.trim()) e.payee = 'Who was paid?'
-    if (!description.trim()) e.description = 'Say what it was for'
-    if (!Number.isInteger(n) || n <= 0) e.amount = 'Enter the amount in whole shillings'
-    if (!date || date > new Date().toLocaleDateString('en-CA')) e.date = 'Choose today or an earlier date'
-    setErr(e)
-    if (Object.keys(e).length) return
-    const bad = f.addExpense({ date: new Date(`${date}T12:00:00`).getTime(), category, payee: payee.trim(), description: description.trim(), amount: n })
-    if (bad) return setErr({ date: bad })
-    closeModal()
-    toast('Expense added')
+  const [f, setF] = useState({ date: new Date().toISOString().slice(0, 10), category: categories[0] ?? 'Other', payee: '', description: '', amount: '' })
+  const [err, setErr] = useState('')
+  const go = async () => {
+    const n = Number(f.amount)
+    if (!f.payee.trim()) return setErr('Who was paid?')
+    if (!(n > 0)) return setErr('Enter the amount in shillings')
+    try { await post('/v1/admin/expenses', { date: f.date, category: f.category, payee: f.payee.trim(), description: f.description.trim(), amountCents: Math.round(n * 100) }); onDone(); closeModal(); toast('Expense added') } catch (e) { setErr(says(e)) }
   }
   return (
     <>
-      <div className="sp-form2"><Field label="Date" type="date" value={date} onChange={setDate} error={err.date} /><Field label="Category" value={category} onChange={setCategory} options={EXPENSE_CATEGORIES} /></div>
-      <Field label="Vendor or payee" value={payee} onChange={setPayee} error={err.payee} />
-      <Field label="Description" value={description} onChange={setDescription} error={err.description} />
-      <Field label="Amount (KES)" type="number" value={amount} onChange={setAmount} error={err.amount} hint={`Expenses above ${kes(f.settings.expenseLimit)} need an owner’s approval.`} />
-      <div className="sp-row end"><Btn onClick={closeModal}>Cancel</Btn><Btn variant="primary" onClick={submit}>Add expense</Btn></div>
-    </>
-  )
-}
-
-function DecideForm({ e, to }: { e: Expense; to: 'Approved' | 'Rejected' }) {
-  const f = useFinance()
-  const { closeModal, toast } = useStore()
-  const [note, setNote] = useState('')
-  const [err, setErr] = useState('')
-  return (
-    <>
-      <Detail label="Expense">{e.id} · {e.payee}</Detail><Detail label="Amount">{kes(e.amount)}</Detail>
-      <div style={{ marginTop: 10 }}><Field label={to === 'Rejected' ? 'Reason' : 'Note (optional)'} multiline value={note} onChange={(v) => { setNote(v); setErr('') }} error={err} /></div>
-      <div className="sp-row end"><Btn onClick={closeModal}>Cancel</Btn><Btn variant={to === 'Rejected' ? 'danger' : 'primary'} onClick={() => { if (to === 'Rejected' && !note.trim()) return setErr('Give a reason so the person knows why'); const bad = f.decideExpense(e.id, to, note.trim()); if (bad) return setErr(bad); closeModal(); toast(`Expense ${to.toLowerCase()}`) }}>{to === 'Approved' ? 'Approve' : 'Reject'}</Btn></div>
+      <div className="sp-form2"><Field label="Date" type="date" value={f.date} onChange={(v) => setF((x) => ({ ...x, date: v }))} /><Field label="Category" value={f.category} onChange={(v) => setF((x) => ({ ...x, category: v }))} options={categories} /><Field label="Paid to" value={f.payee} onChange={(v) => { setF((x) => ({ ...x, payee: v })); setErr('') }} /><Field label="Amount (KES)" value={f.amount} onChange={(v) => { setF((x) => ({ ...x, amount: v })); setErr('') }} error={err} /></div>
+      <Field label="What was it for?" value={f.description} onChange={(v) => setF((x) => ({ ...x, description: v }))} />
+      <div className="actions" style={{ justifyContent: 'flex-end' }}><Btn onClick={closeModal}>Cancel</Btn><Btn variant="primary" onClick={() => void go()}>Add expense</Btn></div>
     </>
   )
 }
 
 export function Expenses() {
-  const f = useFinance()
-  const { openModal, can, toast } = useStore()
-  const now = useNow()
-  const [cat, setCat] = useState('All categories')
-  const [st, setSt] = useState('All statuses')
-  const edit = can('Payments', 'Edit')
-  const from = monthStart(monthKey(now))
-  const mtd = f.expenses.filter((e) => e.date >= from && e.status !== 'Rejected')
-  const byCat = new Map<string, number>()
-  for (const e of mtd) byCat.set(e.category, (byCat.get(e.category) ?? 0) + e.amount)
-  const largest = [...byCat.entries()].sort((a, b) => b[1] - a[1])[0]
-  const rows = f.expenses.filter((e) => (cat === 'All categories' || e.category === cat) && (st === 'All statuses' || e.status === st))
-  const pending = f.expenses.filter((e) => e.status === 'Pending')
+  const { can, toast, openModal } = useStore()
+  const [status, setStatus] = useState('')
+  const { data, failed, loading, reload } = useGet<{ items: Expense[]; categories: string[]; limitCents: number; pendingCount: number; pendingCents: number; approvedThisMonthCents: number }>(`/v1/admin/expenses?limit=300${status ? `&status=${status}` : ''}`)
+  const decide = async (e: Expense, to: 'approved' | 'rejected') => { try { await post(`/v1/admin/expenses/${e.id}/decision`, { to }); toast(to === 'approved' ? 'Expense approved' : 'Expense rejected'); reload() } catch (x) { toast(says(x)) } }
   const cols: Column<Expense>[] = [
-    { key: 'id', header: 'Expense', render: (e) => <b>{e.id}</b> },
-    { key: 'd', header: 'Date', sort: (a, b) => a.date - b.date, render: (e) => dateTime(e.date).replace(/, .*/, '') },
-    { key: 'c', header: 'Category', render: (e) => e.category },
-    { key: 'p', header: 'Vendor or payee', render: (e) => <>{e.payee}<span className="sp-sub">{e.description}</span></> },
-    { key: 'a', header: 'Amount', sort: (a, b) => a.amount - b.amount, render: (e) => <b>{kes(e.amount)}</b> },
-    { key: 'by', header: 'Entered by', render: (e) => e.by },
-    { key: 's', header: 'Status', render: (e) => <Badge tone={e.status === 'Approved' ? 'green' : e.status === 'Rejected' ? 'red' : 'amber'}>{e.status}</Badge> },
+    { key: 'n', header: 'Expense', render: (e) => e.number }, { key: 'd', header: 'Date', render: (e) => e.date },
+    { key: 'p', header: 'Paid to', render: (e) => <div><b>{e.payee}</b><div className="subtext">{e.description}</div></div> }, { key: 'c', header: 'Category', render: (e) => e.category },
+    { key: 'a', header: 'Amount', sort: (a, b) => a.amountCents - b.amountCents, render: (e) => <b>{money(e.amountCents)}</b> },
+    { key: 's', header: 'Status', render: (e) => <Badge tone={e.status === 'approved' ? 'green' : e.status === 'rejected' ? 'red' : 'amber'}>{e.status}</Badge> },
   ]
   return (
     <>
-      <PageHead title="Expense tracking" desc="Record and review operating costs with approval and audit history." actions={<><Btn disabled={!can('Payments', 'Export')} onClick={() => { saveRows('expenses', ['Expense', 'Date', 'Category', 'Payee', 'Description', 'Amount', 'Status'], rows.map((e) => [e.id, new Date(e.date).toISOString().slice(0, 10), e.category, e.payee, e.description, e.amount, e.status]), 'CSV'); toast('Expenses exported') }}>Export expenses</Btn><Btn variant="primary" disabled={!can('Payments', 'Create')} onClick={() => openModal({ title: 'Add expense', body: <ExpenseForm />, noActions: true })}>+ Add expense</Btn></>} />
-      <Stats>
-        <Stat label="Month-to-date expenses" value={kes(mtd.reduce((n, e) => n + e.amount, 0))} trend={`${mtd.length} entries`} icon="−" up={false} />
-        <Stat label="Awaiting approval" value={kes(pending.reduce((n, e) => n + e.amount, 0))} trend={`${pending.length} expense${pending.length === 1 ? '' : 's'}`} icon="!" up={pending.length === 0} />
-        <Stat label="Largest category" value={largest?.[0] ?? '—'} trend={largest ? `${kes(largest[1])} this month` : 'Nothing yet'} icon="▤" />
-      </Stats>
-      <DataTable title="Expenses" rows={rows} rowKey={(e) => e.id} columns={cols} searchLabel="Search expense or payee" searchText={(e) => `${e.id} ${e.payee} ${e.description} ${e.category}`}
-        tools={<><select className="sp-select auto" aria-label="Category" value={cat} onChange={(e) => setCat(e.target.value)}><option>All categories</option>{EXPENSE_CATEGORIES.map((c) => <option key={c}>{c}</option>)}</select><select className="sp-select auto" aria-label="Status" value={st} onChange={(e) => setSt(e.target.value)}><option>All statuses</option><option>Pending</option><option>Approved</option><option>Rejected</option></select></>}
-        actions={(e) => e.status === 'Pending' ? <div className="sp-row"><Btn small disabled={!edit} onClick={() => openModal({ title: `Approve ${e.id}?`, body: <DecideForm e={e} to="Approved" />, noActions: true })}>Approve</Btn><Btn small disabled={!edit} onClick={() => openModal({ title: `Reject ${e.id}?`, body: <DecideForm e={e} to="Rejected" />, noActions: true })}>Reject</Btn></div> : <span className="subtext">{e.decidedBy ? `${e.status} by ${e.decidedBy}` : ''}</span>} />
+      <PageHead title="Expense tracking" desc={`Expenses above ${data ? money(data.limitCents) : 'the limit'} need a second person to approve.`} actions={<><Btn onClick={reload}>Refresh</Btn><Btn variant="primary" disabled={!can('Payments', 'Create')} onClick={() => openModal({ title: 'Add expense', body: <ExpenseForm categories={data?.categories?.length ? [...new Set([...data.categories, 'Other'])] : ['Marketing', 'Fuel & fleet', 'Software', 'Office & hub', 'Professional fees', 'Insurance', 'Other']} onDone={reload} />, noActions: true })}>Add expense</Btn></>} />
+      <div className="tile-row"><Stat label="Approved this month" value={data ? money(data.approvedThisMonthCents) : '—'} trend="Counts against profit" icon="−" /><Stat label="Waiting for approval" value={data ? money(data.pendingCents) : '—'} trend={`${data?.pendingCount ?? 0} expenses`} icon="◷" up={(data?.pendingCount ?? 0) === 0} /></div>
+      <DataTable title="Expenses" rows={data?.items ?? []} rowKey={(e) => e.id} columns={cols} loading={loading} error={failed && !data ? 'We couldn’t load the expenses.' : undefined} onRetry={reload} searchLabel="Search expenses" searchText={(e) => `${e.number} ${e.payee} ${e.description} ${e.category}`} emptyTitle="No expenses" empty="Record what the business spends."
+        tools={<select className="select" aria-label="Status" value={status} onChange={(e) => setStatus(e.target.value)}><option value="">All</option><option value="pending">Waiting</option><option value="approved">Approved</option><option value="rejected">Rejected</option></select>}
+        actions={(e) => (e.status === 'pending' ? <div className="sp-row"><Btn small variant="primary" disabled={!can('Payments', 'Edit')} onClick={() => void decide(e, 'approved')}>Approve</Btn><Btn small disabled={!can('Payments', 'Edit')} onClick={() => void decide(e, 'rejected')}>Reject</Btn></div> : <span className="subtext">{e.decidedBy ?? ''}</span>)} />
     </>
   )
 }
 
-// ---- export center ----------------------------------------------------------------------------------------------------------------
+// ---- exports --------------------------------------------------------------------------------------------------------
 
 export function ExportCenter() {
-  const store = useStore()
-  const { orders, payouts, riders, can, toast } = store
-  const f = useFinance()
-  const now = useNow()
-  const [dataset, setDataset] = useState<ExportDataset>('Payments')
-  const [format, setFormat] = useState<'CSV' | 'Excel'>('CSV')
-  const allowed = EXPORT_DATASETS.filter((d) => (d === 'Payroll summary' ? can('Payroll', 'Export') : can('Payments', 'Export')))
-
-  const build = (d: ExportDataset): [string[], (string | number)[][]] => {
-    switch (d) {
-      case 'Payments': return [['Payment', 'Order', 'Customer', 'Method', 'Amount', 'Status', 'Reference', 'Date'], f.payments.map((t) => [t.id, t.orderId, t.customer, t.method, t.amount, t.status, t.ref, new Date(t.at).toISOString()])]
-      case 'Refunds': return [['Order', 'Customer', 'Refunded', 'Method'], orders.filter((o) => o.refunded > 0).map((o) => [o.id, o.customer, o.refunded, o.method])]
-      case 'Rider payouts': return [['Payout', 'Rider', 'Amount', 'Status', 'Requested'], payouts.map((p) => [p.id, p.rider, p.amount, p.status, new Date(p.requestedAt).toISOString()])]
-      case 'COD balances': return [['Rider', 'Zone', 'Cash held'], riders.filter((r) => r.cashHeld > 0).map((r) => [r.name, r.zone, r.cashHeld])]
-      case 'Expenses': return [['Expense', 'Date', 'Category', 'Payee', 'Amount', 'Status'], f.expenses.map((e) => [e.id, new Date(e.date).toISOString().slice(0, 10), e.category, e.payee, e.amount, e.status])]
-      case 'Invoices': return [['Invoice', 'Business', 'Total', 'Paid', 'Balance', 'Status'], f.invoices.map((i) => [i.id, i.customer, invoiceTotal(i), invoicePaid(i), invoiceBalance(i), invoiceStatus(i, now)])]
-      case 'VAT summary': return [['Month', 'VAT collected', 'Refund adjustments', 'Net payable'], monthOptions(now, 5).map((k) => { const m = f.month(k); return [monthLabel(k), Math.round(vatIn(m.gross, f.vatRate)), Math.round(vatIn(m.refunds, f.vatRate)), Math.round(vatIn(m.gross, f.vatRate) - vatIn(m.refunds, f.vatRate))] })]
-      case 'Profit and loss': return [['Month', 'Revenue', 'Gross profit', 'Operating costs', 'Net profit'], monthOptions(now, 5).map((k) => { const p = computePnl(f.month(k), f.settings, f.vatRate, f.expenses, f.runs); return [monthLabel(k), Math.round(p.revenue), Math.round(p.grossProfit), Math.round(p.opex), Math.round(p.net)] })]
-      case 'Payroll summary': return [['Month', 'Status', 'Employees', 'Gross', 'Net', 'PAYE', 'NSSF', 'SHIF', 'Housing levy'], f.runs.map((r) => { const t = runTotals(r); return [monthLabel(r.month), r.status, r.lines.length, t.gross, t.net, t.paye, t.nssf, t.shif, t.housing] })]
-      case 'Store settlements': return [['Store', 'Month', 'Sales', 'Commission', 'Net', 'Status'], f.settlements.map((s) => [s.store, s.month, s.sales, s.commission, s.net, s.paid ? 'Paid' : 'Payable'])]
-    }
+  const { can, toast } = useStore()
+  const { data, failed, reload } = useGet<{ datasets: string[]; items: { id: string; number: string; name: string; dataset: string; format: string; rows: number; by: string; at: string }[] }>('/v1/admin/exports')
+  const [dataset, setDataset] = useState('Payments')
+  const [month, setMonth] = useState(() => { const d = new Date(); d.setMonth(d.getMonth() - 1); return d.toISOString().slice(0, 7) })
+  const [busy, setBusy] = useState(false)
+  const go = async () => {
+    setBusy(true)
+    try {
+      const csv = await postForText('/v1/admin/exports', { dataset, format: 'CSV', month })
+      const blob = new Blob([csv], { type: 'text/csv' })
+      const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `${dataset.toLowerCase().replace(/\s+/g, '-')}-${month}.csv`; a.click()
+      toast('Export downloaded'); reload()
+    } catch (e) { toast(says(e)) } finally { setBusy(false) }
   }
-  const run = (d: ExportDataset, fmt: 'CSV' | 'Excel', job?: ExportJob) => {
-    const [h, rows] = build(d)
-    saveRows(d.toLowerCase().replaceAll(' ', '-'), h, rows, fmt)
-    toast(job ? 'Download started' : `${d} export ready`)
-  }
-  const create = () => { const job = f.addExport(dataset, format); run(dataset, format, undefined); void job }
-  const cols: Column<ExportJob>[] = [
-    { key: 'n', header: 'Export', render: (j) => <b>{j.name}</b> },
-    { key: 'd', header: 'Data', render: (j) => j.dataset },
-    { key: 'f', header: 'Format', render: (j) => j.format },
-    { key: 'b', header: 'Requested by', render: (j) => j.by },
-    { key: 'c', header: 'Created', sort: (a, b) => a.at - b.at, render: (j) => when(j.at) },
-    { key: 's', header: 'Status', render: (j) => <Badge tone={j.status === 'Ready' ? 'green' : 'gray'}>{j.status}</Badge> },
-  ]
   return (
     <>
-      <PageHead title="Export center" desc="Prepare and download finance data as CSV or Excel." />
-      <Panel title="New export" sub="Pick the data and format. The file downloads straight away and is listed below.">
-        <div className="sp-row" style={{ alignItems: 'end' }}>
-          <div style={{ minWidth: 230 }}><Field label="Data" value={dataset} onChange={(v) => setDataset(v as ExportDataset)} options={allowed} /></div>
-          <div style={{ minWidth: 140 }}><Field label="Format" value={format} onChange={(v) => setFormat(v as 'CSV' | 'Excel')} options={EXPORT_FORMATS} /></div>
-          <div style={{ marginBottom: 12 }}><Btn variant="primary" disabled={!allowed.length} onClick={create}>Create export</Btn></div>
-        </div>
-        <p className="panel-sub">PDF exports and scheduled exports arrive with the backend.</p>
-      </Panel>
-      <div style={{ height: 14 }} />
-      <DataTable title="Export history" rows={f.exportsLog} rowKey={(j) => j.id} columns={cols} searchLabel="Search export history" searchText={(j) => `${j.name} ${j.dataset}`}
-        actions={(j) => <Btn small disabled={!allowed.includes(j.dataset)} onClick={() => run(j.dataset, j.format, j)}>{j.status === 'Ready' ? 'Download' : 'Recreate'}</Btn>} />
+      <PageHead title="Export center" desc="Download your finance data as CSV. Every export is recorded." />
+      <div className="sp-two">
+        <Panel title="New export">
+          <Field label="What to export" value={dataset} onChange={setDataset} options={data?.datasets ?? ['Payments']} />
+          <Field label="Month (for monthly reports)" type="month" value={month} onChange={setMonth} />
+          <div className="sp-row end"><Btn variant="primary" disabled={!can('Payments', 'Export') || busy} onClick={() => void go()}>{busy ? 'Preparing…' : 'Download CSV'}</Btn></div>
+        </Panel>
+        <Panel title="Recent exports">
+          {failed && !data && <div className="panel-sub">We couldn’t load the history.</div>}
+          {data?.items.length === 0 && <div className="panel-sub">Nothing exported yet.</div>}
+          {data?.items.slice(0, 12).map((x) => <SettingRow key={x.id} title={`${x.number} · ${x.dataset}`} sub={`${x.rows} rows · ${x.by} · ${dateTime(Date.parse(x.at))}`} />)}
+        </Panel>
+      </div>
     </>
   )
 }
 
-// ---- period close --------------------------------------------------------------------------------------------------------------
+// ---- period close ---------------------------------------------------------------------------------------------------
+
+interface Close { month: string; checks: { key: string; title: string; ok: boolean; detail: string; to: string }[]; done: number; ready: boolean; closed: { by: string; at: string; note: string } | null; snapshot: { revenueCents: number; refundsCents: number; operatingCostsCents: number; netProfitCents: number } }
 
 export function PeriodClose() {
-  const f = useFinance()
-  const { deposits, payouts, openModal, toast, role } = useStore()
-  const now = useNow()
-  const [mk, setMk] = useState(() => monthOptions(Date.now(), 5)[1]!)
+  const { can, toast } = useStore()
+  const [month, setMonth] = useState(() => { const d = new Date(); d.setMonth(d.getMonth() - 1); return d.toISOString().slice(0, 7) })
+  const { data: c, failed, reload } = useGet<Close>(`/v1/admin/periods/${month}`)
   const [note, setNote] = useState('')
-  const from = monthStart(mk), to = monthEnd(mk)
-  const closed = f.closed[mk]
-  const openLines = f.statement.lines.filter((l) => !l.resolution && (l.ours === null || l.gateway !== l.ours)).length
-  const run = f.runs.find((r) => r.month === mk)
-  const checks: { title: string; detail: string; ok: boolean; to: string }[] = [
-    { title: 'Reconcile gateway settlements', detail: f.statement.completed && !openLines ? 'Statement reconciled with no open lines' : `${openLines} open line${openLines === 1 ? '' : 's'}${f.statement.completed ? '' : ' · not completed'}`, ok: f.statement.completed && openLines === 0, to: '/finance/reconciliation' },
-    { title: 'Review COD balances', detail: deposits.some((d) => d.status === 'Due') ? `${deposits.filter((d) => d.status === 'Due').length} rider balances still due` : 'No overdue cash', ok: !deposits.some((d) => d.status === 'Due'), to: '/finance/cod' },
-    { title: 'Approve and send rider payouts', detail: payouts.some((p) => p.status !== 'Paid') ? `${payouts.filter((p) => p.status !== 'Paid').length} payouts not sent` : 'Every payout sent', ok: !payouts.some((p) => p.status !== 'Paid'), to: '/finance/batch' },
-    { title: 'Review expense submissions', detail: f.expenses.some((e) => e.status === 'Pending' && e.date >= from && e.date < to) ? 'Expenses waiting for a decision' : 'All expenses decided', ok: !f.expenses.some((e) => e.status === 'Pending' && e.date >= from && e.date < to), to: '/finance/expenses' },
-    { title: 'Prepare and file the VAT return', detail: f.filings[mk]?.status === 'Filed' ? `Filed · ${f.filings[mk]!.ack}` : f.filings[mk] ? 'Draft prepared, not filed' : 'No return prepared', ok: f.filings[mk]?.status === 'Filed', to: '/finance/vat' },
-    { title: 'Pay payroll for the month', detail: run ? `Run is ${run.status.toLowerCase()}` : 'No payroll run for this month', ok: run?.status === 'Paid', to: '/finance/payroll' },
-  ]
-  const done = checks.filter((c) => c.ok).length
-  const p = computePnl(f.month(mk), f.settings, f.vatRate, f.expenses, f.runs)
-  const close = () => openModal({ title: `Close ${monthLabel(mk)}?`, message: 'The period will be locked. Expenses, deposits and payroll can’t be added to it until an owner reopens it. This is recorded in the audit log.', confirm: 'Close period', onConfirm: () => { f.closePeriod(mk, note.trim()); toast(`${monthLabel(mk)} closed`) } })
-  const reopen = () => openModal({ title: `Reopen ${monthLabel(mk)}?`, message: 'Anyone with access can add entries to this period again. The reopening is recorded.', confirm: 'Reopen', danger: true, onConfirm: () => { f.reopenPeriod(mk); toast('Period reopened') } })
+  const act = async (what: () => Promise<unknown>, done: string) => { try { await what(); toast(done); reload() } catch (e) { toast(says(e)) } }
   return (
     <>
-      <PageHead title="Financial period close" desc="Complete finance controls and lock the accounting period with an audit trail." actions={<><MonthSelect value={mk} onChange={setMk} now={now} /><Btn variant="primary" disabled={!!closed || done < checks.length || role === 'Customer support'} onClick={close}>Close period</Btn></>} />
-      <div className="sp-two">
-        <div className="sp-stack">
-          <Panel title="Close checklist" sub={`${done} of ${checks.length} controls complete`} right={closed ? <Badge tone="gray">Closed</Badge> : <Badge tone={done === checks.length ? 'green' : 'amber'}>{done === checks.length ? 'Ready to close' : 'In progress'}</Badge>}>
-            <div className="progress" style={{ marginBottom: 10 }}><i style={{ width: `${(done / checks.length) * 100}%` }} /></div>
-            {checks.map((c, i) => (
-              <div className="list-row" key={c.title}>
-                <div style={{ display: 'flex', gap: 9, alignItems: 'flex-start' }}><span className="fin-steps" style={{ margin: 0 }}><li className={c.ok ? 'done' : ''} style={{ padding: 0, border: 0, background: 'none' }}><b>{c.ok ? '✓' : i + 1}</b></li></span><div><b style={{ fontSize: 11 }}>{c.title}</b><div className="panel-sub">{c.detail}</div></div></div>
-                {c.ok ? <Badge tone="green">Done</Badge> : <Btn small onClick={() => navigate(c.to)}>Review</Btn>}
-              </div>
-            ))}
+      <PageHead title="Financial period close" desc="Check everything is settled, then lock the month so its numbers can’t change." actions={<Field label="" type="month" value={month} onChange={setMonth} />} />
+      {!c && <div className="panel-sub">{failed ? 'We couldn’t load this month.' : 'Loading…'}</div>}
+      {c && (
+        <div className="sp-two">
+          <Panel title={`${monthName(c.month)} checklist`} right={<Badge tone={c.ready ? 'green' : 'amber'}>{`${c.done}/${c.checks.length} done`}</Badge>}>
+            {c.checks.map((k) => <div className="list-row" key={k.key}><span><strong>{k.ok ? '✓ ' : '○ '}{k.title}</strong><small>{k.detail}</small></span>{!k.ok && <Btn small onClick={() => navigate(k.to)}>Open</Btn>}</div>)}
           </Panel>
-          <Panel title="Period notes">
-            <textarea className="sp-text" aria-label="Close notes" placeholder="Add close notes for the audit record" value={closed ? closed.note : note} disabled={!!closed} onChange={(e) => setNote(e.target.value)} />
-            <p className="panel-sub" style={{ marginTop: 6 }}>Changes are recorded in the audit log.</p>
-          </Panel>
+          <div className="sp-stack">
+            <Panel title="Month at a glance"><SettingRow title="Revenue" right={<b>{money(c.snapshot.revenueCents)}</b>} /><SettingRow title="Refunds" right={<span className="prod-name">{money(c.snapshot.refundsCents)}</span>} /><SettingRow title="Operating costs" right={<span className="prod-name">{money(c.snapshot.operatingCostsCents)}</span>} /><SettingRow title="Net profit" right={<b>{money(c.snapshot.netProfitCents)}</b>} /></Panel>
+            <Panel title={c.closed ? 'Closed' : 'Close the month'}>
+              {c.closed ? (
+                <><Notice mark="✓">{`Closed by ${c.closed.by} on ${dateTime(Date.parse(c.closed.at))}${c.closed.note ? `: ${c.closed.note}` : ''}`}</Notice><div className="sp-row end"><Btn disabled={!can('Payments', 'Edit')} onClick={() => void act(() => del(`/v1/admin/periods/${month}`), 'Month reopened')}>Reopen</Btn></div></>
+              ) : (
+                <><Field label="Note (optional)" value={note} onChange={setNote} /><div className="sp-row end"><Btn variant="primary" disabled={!can('Payments', 'Edit') || !c.ready} onClick={() => void act(() => post(`/v1/admin/periods/${month}/close`, { note: note.trim() }), 'Month closed')}>Close the month</Btn></div>{!c.ready && <div className="panel-sub">Finish the checklist first.</div>}</>
+              )}
+            </Panel>
+          </div>
         </div>
-        <div className="sp-stack">
-          <Panel title={`${monthLabel(mk)} snapshot`}>
-            <Detail label="Total revenue">{kes(p.revenue)}</Detail><Detail label="Refunds">{kes(f.month(mk).refunds)}</Detail><Detail label="Operating costs">{kes(p.opex)}</Detail><Detail label="Net profit">{kes(p.net)}</Detail>
-          </Panel>
-          {closed ? (
-            <Notice tone="success" mark="✓">Closed by {closed.by} on {dateTime(closed.at)}.{closed.note && ` “${closed.note}”`} {role === 'Owner admin' && <button className="link-btn" onClick={reopen}>Reopen</button>}</Notice>
-          ) : done < checks.length ? <Notice tone="error" mark="!"><b>Resolve open controls before locking.</b> {checks.length - done} still need attention.</Notice> : <Notice tone="success" mark="✓">Every control is complete. You can close the period.</Notice>}
-        </div>
-      </div>
+      )}
     </>
   )
 }
 
-// ---- finance settings -----------------------------------------------------------------------------------------------------------------
+// ---- finance settings -----------------------------------------------------------------------------------------------
 
-export function FinanceSettingsPage() {
-  const f = useFinance()
-  const { toast, can, log, business, role, requestAccess, requestedAccess } = useStore()
-  const [v, setV] = useState({ cogsRate: String(f.settings.cogsRate), storeCommission: String(f.settings.storeCommission), processingFee: String(f.settings.processingFee), codWindowHours: String(f.settings.codWindowHours), expenseLimit: String(f.settings.expenseLimit) })
-  const [err, setErr] = useState<Record<string, string>>({})
-  const edit = can('Payments', 'Edit')
-  const set = (k: keyof typeof v) => (x: string) => { setV({ ...v, [k]: x }); setErr({}) }
-  const save = () => {
-    const e: Record<string, string> = {}
-    const n = (k: keyof typeof v) => Number(v[k])
-    for (const k of ['cogsRate', 'storeCommission'] as const) if (!(n(k) >= 0 && n(k) <= 100)) e[k] = 'Enter a percentage from 0 to 100'
-    if (!(n('processingFee') >= 0 && n('processingFee') <= 10)) e.processingFee = 'Enter a percentage from 0 to 10'
-    if (!(n('codWindowHours') >= 1 && n('codWindowHours') <= 168)) e.codWindowHours = 'Enter hours from 1 to 168'
-    if (!(n('expenseLimit') >= 0)) e.expenseLimit = 'Enter an amount in shillings'
-    setErr(e)
-    if (Object.keys(e).length) return
-    f.setSettings({ cogsRate: n('cogsRate'), storeCommission: n('storeCommission'), processingFee: n('processingFee'), codWindowHours: n('codWindowHours'), expenseLimit: n('expenseLimit') })
-    log('Updated finance settings', 'Payments', 'Security')
-    toast('Finance settings saved')
+interface FinSettings { cogsRate: number; storeCommission: number; processingFee: number; codWindowHours: number; expenseLimitCents: number; vatRate: number }
+
+function SettingsEditor({ s, onSaved }: { s: FinSettings; onSaved: () => void }) {
+  const { can, toast } = useStore()
+  const [f, setF] = useState({ cogsRate: String(s.cogsRate), storeCommission: String(s.storeCommission), processingFee: String(s.processingFee), codWindowHours: String(s.codWindowHours), expenseLimit: String(shillings(s.expenseLimitCents)), vatRate: String(s.vatRate) })
+  const [err, setErr] = useState('')
+  const set = (k: keyof typeof f) => (v: string) => { setF((x) => ({ ...x, [k]: v })); setErr('') }
+  const save = async () => {
+    try { await patch('/v1/admin/finance/settings', { cogsRate: Number(f.cogsRate), storeCommission: Number(f.storeCommission), processingFee: Number(f.processingFee), codWindowHours: Number(f.codWindowHours), expenseLimitCents: Math.round(Number(f.expenseLimit) * 100), vatRate: Number(f.vatRate) }); onSaved(); toast('Finance settings saved') } catch (e) { setErr(says(e)) }
   }
   return (
-    <>
-      <PageHead title="Finance settings" desc="The rates and limits behind the finance reports." actions={<Btn variant="primary" disabled={!edit} onClick={save}>Save changes</Btn>} />
-      {!edit && <section className="card panel" style={{ marginBottom: 14 }}><PermissionDenied title="You can read these settings but not change them" body="Only finance staff and owners can edit rates and limits." yourRole={role} requiredRole="Finance analyst or Owner admin" onRequest={() => requestAccess('Finance settings')} requested={requestedAccess.includes('Finance settings')} /></section>}
-      <div className="sp-two">
-        <div className="sp-stack">
-          <Panel title="Margins and fees">
-            <div className="sp-form2">
-              <Field label="Product cost (% of product sales)" type="number" value={v.cogsRate} onChange={set('cogsRate')} error={err.cogsRate} hint="Used for gross profit until real product costs are tracked." />
-              <Field label="Store commission (%)" type="number" value={v.storeCommission} onChange={set('storeCommission')} error={err.storeCommission} hint="What ShopCore keeps from partner stores’ product sales." />
-              <Field label="Payment processing cost (%)" type="number" value={v.processingFee} onChange={set('processingFee')} error={err.processingFee} />
-            </div>
-          </Panel>
-          <Panel title="Controls">
-            <div className="sp-form2">
-              <Field label="COD deposit window (hours)" type="number" value={v.codWindowHours} onChange={set('codWindowHours')} error={err.codWindowHours} hint="Riders must hand in cash within this time." />
-              <Field label="Expense approval limit (KES)" type="number" value={v.expenseLimit} onChange={set('expenseLimit')} error={err.expenseLimit} hint="Above this, only an owner can approve." />
-            </div>
-          </Panel>
-        </div>
-        <div className="sp-stack">
-          <Panel title="Set elsewhere">
-            <Detail label="VAT rate">{business.vat}%</Detail>
-            <Detail label="KRA PIN">{business.kra}</Detail>
-            <div style={{ marginTop: 10 }}><Btn small onClick={() => navigate('/settings/business')}>Business settings</Btn></div>
-            <p className="panel-sub" style={{ marginTop: 10 }}>Zone fees and rider shares are in Delivery settings. Payroll rates are on the Payroll pages.</p>
-          </Panel>
-        </div>
+    <Panel title="Rates and limits">
+      <div className="sp-form2">
+        <Field label="VAT rate (%)" value={f.vatRate} onChange={set('vatRate')} hint="Already inside your prices." />
+        <Field label="Cost of goods (% of product sales)" value={f.cogsRate} onChange={set('cogsRate')} hint="An estimate used in profit and loss." />
+        <Field label="Store commission (%)" value={f.storeCommission} onChange={set('storeCommission')} />
+        <Field label="Payment processing cost (%)" value={f.processingFee} onChange={set('processingFee')} />
+        <Field label="Cash hand-in window (hours)" value={f.codWindowHours} onChange={set('codWindowHours')} />
+        <Field label="Expense approval limit (KES)" value={f.expenseLimit} onChange={set('expenseLimit')} error={err} hint="Bigger expenses need a second approver." />
       </div>
+      <div className="sp-row end"><Btn variant="primary" disabled={!can('Payments', 'Edit')} onClick={() => void save()}>Save settings</Btn></div>
+    </Panel>
+  )
+}
+
+export function FinanceSettingsPage() {
+  const { data, failed, reload } = useGet<FinSettings>('/v1/admin/finance/settings')
+  return (
+    <>
+      <PageHead title="Finance settings" desc="The rates the finance reports use." />
+      {!data && <div className="panel-sub">{failed ? 'We couldn’t load the settings.' : 'Loading…'}</div>}
+      {data && <SettingsEditor key={JSON.stringify(data)} s={data} onSaved={reload} />}
     </>
   )
 }
+

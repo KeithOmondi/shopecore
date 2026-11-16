@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="280" viewBox="0 0 1120 280" role="img" aria-labelledby="logo-title logo-description">
+  <title id="logo-title">ShopCore</title>
+  <desc id="logo-description">ShopCore shopping bag mark and wordmark in blue, navy, and orange.</desc>
+  <g transform="translate(40 40)">
+    <rect width="200" height="200" rx="52" fill="#2563EB"/>
+    <path d="M64 87V72c0-21 16-38 36-38s36 17 36 38v15" fill="none" stroke="#FFFFFF" stroke-width="13" stroke-linecap="round"/>
+    <rect x="48" y="78" width="104" height="88" rx="19" fill="#FFFFFF"/>
+    <text x="100" y="143" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="56" font-weight="800" fill="#2563EB">S</text>
+    <circle cx="174" cy="26" r="23" fill="#F97316"/>
+    <path d="m164 26 7 7 14-16" fill="none" stroke="#FFFFFF" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+  <text x="290" y="177" font-family="Inter, Arial, sans-serif" font-size="132" font-weight="800" letter-spacing="-5">
+    <tspan fill="#0F172A">Shop</tspan><tspan fill="#2563EB">Core</tspan>
+  </text>
+</svg>

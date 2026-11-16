@@ -1,373 +1,274 @@
 import { useState } from 'react'
 
-import { Stats, Steps } from '../components/finance-ui'
-import { Detail, NotFoundCard, Person, useNow, when } from '../components/support-ui'
-import { Badge, Btn, DataTable, downloadCsv, Field, Notice, PageHead, Panel, Stat, type Column } from '../components/ui'
-import type { Order, Payout, Rider } from '../data/commerce'
-import { COD_ACCOUNTS, COD_METHODS, monthKey, monthLabel, type PayoutBatch, type Settlement } from '../data/finance'
+import { Badge, Btn, DataTable, downloadCsv, Field, Notice, PageHead, Panel, SettingRow, Stat, type Column } from '../components/ui'
+import { ApiError, del, post } from '../lib/api'
 import { dateTime, kes } from '../lib/format'
-import { useFinance } from '../lib/finance'
 import { navigate, useQuery } from '../lib/router'
 import { useStore } from '../lib/store'
+import { useGet } from '../lib/use-get'
+import type { ApiRider } from './Riders'
 
-const DAY = 86_400_000
-const mask = (phone: string) => { const d = phone.replace(/\D/g, '').replace(/^254/, '0'); return `${d.slice(0, 4)} ••• ${d.slice(-3)}` }
+const says = (e: unknown) => (e instanceof ApiError ? e.message : 'Something went wrong. Try again.')
+const shillings = (c: number) => c / 100
+const money = (c: number) => kes(shillings(c))
+const monthName = (m: string) => new Date(`${m}-01T12:00:00`).toLocaleString('en-GB', { month: 'long', year: 'numeric' })
 
-// ---- COD -----------------------------------------------------------------------------------------------------
+// ---- cash on delivery -----------------------------------------------------------------------------------------------
+
+interface Cash {
+  owed: { riderId: string; rider: string; phone: string; heldCents: number; since: string | null; orders: number; overdue: boolean }[]; windowHours: number; totalHeldCents: number
+  deposits: { id: string; riderId: string; rider: string; amountCents: number; ref: string; method: string | null; account: string | null; note: string; receivedBy: string; at: string }[]
+}
 
 export function CodManagement() {
-  const { riders, deposits, can } = useStore()
-  const f = useFinance()
-  const now = useNow()
-  const [zone, setZone] = useState('All zones')
-  const [bal, setBal] = useState('All balances')
-  const edit = can('Payments', 'Edit')
-  const held = riders.reduce((n, r) => n + r.cashHeld, 0)
-  const due = deposits.filter((d) => d.status === 'Due')
-  const today = f.codRecords.filter((c) => now - c.at < DAY)
-  const rows = riders.filter((r) => (r.cashHeld > 0 || f.codRecords.some((c) => c.riderId === r.id)) && (zone === 'All zones' || r.zone === zone) && (bal === 'All balances' || (bal === 'Outstanding' ? r.cashHeld > 0 : r.cashHeld === 0)))
-  const zones = [...new Set(riders.map((r) => r.zone))]
-  const paid = (r: Rider) => f.codRecords.filter((c) => c.riderId === r.id).reduce((n, c) => n + c.amount, 0)
-  const last = (r: Rider) => f.codRecords.find((c) => c.riderId === r.id)?.at
-
-  const cols: Column<Rider>[] = [
-    { key: 'r', header: 'Rider', sort: (a, b) => a.name.localeCompare(b.name), render: (r) => <>{can('Riders', 'View') ? <button className="sp-link" onClick={() => navigate(`/riders/${r.id}`)}>{r.name}</button> : <b>{r.name}</b>}<span className="sp-sub">{r.id.toUpperCase()}</span></> },
-    { key: 'z', header: 'Zone', render: (r) => r.zone },
-    { key: 'h', header: 'Cash held', sort: (a, b) => a.cashHeld - b.cashHeld, render: (r) => <b style={{ color: r.cashHeld ? 'var(--amber)' : 'var(--green)' }}>{kes(r.cashHeld)}</b> },
-    { key: 'd', header: 'Handed in (recorded)', render: (r) => kes(paid(r)) },
-    { key: 'l', header: 'Last deposit', render: (r) => { const l = last(r); return l ? dateTime(l) : '—' } },
-    { key: 's', header: 'Status', render: (r) => deposits.some((d) => d.riderId === r.id && d.status === 'Due') ? <Badge tone="red">Due</Badge> : r.cashHeld > 0 ? <Badge tone="amber">Holding cash</Badge> : <Badge tone="green">Clear</Badge> },
+  const { can } = useStore()
+  const { data, failed, loading, reload } = useGet<Cash>('/v1/admin/cash', 60_000)
+  const owed = data?.owed ?? []
+  const cols: Column<Cash['owed'][number]>[] = [
+    { key: 'r', header: 'Rider', sort: (a, b) => a.rider.localeCompare(b.rider), render: (r) => <div><b>{r.rider}</b><div className="subtext">{r.phone}</div></div> },
+    { key: 'h', header: 'Cash held', sort: (a, b) => a.heldCents - b.heldCents, render: (r) => <b>{money(r.heldCents)}</b> },
+    { key: 'o', header: 'Orders', render: (r) => r.orders },
+    { key: 's', header: 'Holding since', render: (r) => (r.since ? dateTime(Date.parse(r.since)) : '—') },
+    { key: 'st', header: 'Status', render: (r) => <Badge tone={r.overdue ? 'red' : 'green'}>{r.overdue ? 'Overdue' : 'Within the window'}</Badge> },
   ]
   return (
     <>
-      <PageHead title="COD management" desc="Track cash held by riders, deposits received and outstanding balances." actions={<><Btn onClick={() => navigate('/finance/statements')}>Rider statements</Btn><Btn variant="primary" disabled={!edit} onClick={() => navigate('/finance/cod/deposit')}>+ Record deposit</Btn></>} />
-      <Stats>
-        <Stat label="Cash held by riders" value={kes(held)} trend={due.length ? `${kes(due.reduce((n, d) => n + d.owed, 0))} due` : 'Nothing overdue'} icon="₭" up={due.length === 0} />
-        <Stat label="Deposited in the last 24h" value={kes(today.reduce((n, c) => n + c.amount, 0))} trend={`${today.length} deposits`} icon="↓" />
-        <Stat label="Riders holding cash" value={String(riders.filter((r) => r.cashHeld > 0).length)} trend={`${due.length} past the ${f.settings.codWindowHours}-hour window`} icon="♙" up={due.length === 0} />
-        <Stat label="Deposits recorded" value={String(f.codRecords.length)} trend="In this demo session" icon="✓" />
-      </Stats>
-      {due.length > 0 && <div style={{ marginBottom: 12 }}><Notice tone="warning" mark="!"><b>{due.length} rider{due.length === 1 ? ' is' : 's are'} past the deposit window.</b> Riders must hand in cash within {f.settings.codWindowHours} hours.</Notice></div>}
-      <DataTable
-        title="Rider cash balances"
-        rows={rows}
-        rowKey={(r) => r.id}
-        columns={cols}
-        searchLabel="Search rider"
-        searchText={(r) => `${r.name} ${r.zone} ${r.id}`}
-        tools={<><select className="sp-select auto" aria-label="Zone" value={zone} onChange={(e) => setZone(e.target.value)}><option>All zones</option>{zones.map((z) => <option key={z}>{z}</option>)}</select><select className="sp-select auto" aria-label="Balance" value={bal} onChange={(e) => setBal(e.target.value)}><option>All balances</option><option>Outstanding</option><option>Cleared</option></select></>}
-        actions={(r) => <Btn small disabled={!edit || r.cashHeld === 0} onClick={() => navigate(`/finance/cod/deposit?rider=${r.id}`)}>Record deposit</Btn>}
-      />
-      <div style={{ height: 14 }} />
-      <Panel title="Deposit history" sub="Cash and transfers recorded against rider balances">
-        <div className="table-wrap"><table><thead><tr><th>Reference</th><th>Rider</th><th>Amount</th><th>Method</th><th>Received into</th><th>When</th><th>By</th></tr></thead>
-          <tbody>{f.codRecords.map((c) => <tr key={c.id}><td><code>{c.ref}</code></td><td>{c.rider}</td><td><b>{kes(c.amount)}</b></td><td>{c.method}</td><td>{c.account}</td><td>{dateTime(c.at)}</td><td>{c.by}</td></tr>)}
-            {!f.codRecords.length && <tr><td colSpan={7} style={{ textAlign: 'center', color: 'var(--muted)', padding: 20 }}>No deposits recorded yet.</td></tr>}</tbody></table></div>
-      </Panel>
+      <PageHead title="COD management" desc={`Cash riders collected from customers. They should hand it in within ${data?.windowHours ?? 24} hours.`} actions={<><Btn onClick={reload}>Refresh</Btn><Btn variant="primary" disabled={!can('Payments', 'Edit')} onClick={() => navigate('/finance/cod/deposit')}>Record a deposit</Btn></>} />
+      <div className="tile-row">
+        <Stat label="Cash out with riders" value={data ? money(data.totalHeldCents) : '—'} trend={`${owed.length} riders`} icon="◈" up={owed.length === 0} />
+        <Stat label="Overdue" value={String(owed.filter((r) => r.overdue).length)} trend="Past the hand-in window" icon="!" up={owed.every((r) => !r.overdue)} />
+      </div>
+      <DataTable title="Cash held by riders" rows={owed} rowKey={(r) => r.riderId} columns={cols} loading={loading} error={failed && !data ? 'We couldn’t load the cash balances.' : undefined} onRetry={reload} searchLabel="Search riders" searchText={(r) => `${r.rider} ${r.phone}`} emptyTitle="No cash is out" empty="Riders have handed in everything they collected."
+        actions={(r) => <Btn small disabled={!can('Payments', 'Edit')} onClick={() => navigate(`/finance/cod/deposit?rider=${r.riderId}`)}>Record deposit</Btn>} />
+      <div style={{ marginTop: 14 }}>
+        <Panel title="Recent deposits">
+          {data?.deposits.length === 0 && <div className="panel-sub">No deposits yet.</div>}
+          {data?.deposits.slice(0, 12).map((d) => <SettingRow key={d.id} title={`${d.rider} · ${money(d.amountCents)}`} sub={`${d.method ?? ''} · ${d.ref} · received by ${d.receivedBy} · ${dateTime(Date.parse(d.at))}`} />)}
+        </Panel>
+      </div>
     </>
   )
 }
 
 export function CodDeposit() {
-  const { riders, openModal, toast, can } = useStore()
-  const f = useFinance()
-  const now = useNow()
-  const wanted = useQuery().get('rider')
-  const owing = riders.filter((r) => r.cashHeld > 0)
-  const [riderId, setRiderId] = useState(owing.find((r) => r.id === wanted)?.id ?? owing[0]?.id ?? '')
-  const [amount, setAmount] = useState(() => String(owing.find((r) => r.id === wanted)?.cashHeld ?? owing[0]?.cashHeld ?? ''))
-  const [method, setMethod] = useState<string>(COD_METHODS[0])
+  const { can, toast } = useStore()
+  const q = useQuery()
+  const { data } = useGet<Cash>('/v1/admin/cash')
+  const [riderId, setRiderId] = useState(q.get('rider') ?? '')
+  const [amount, setAmount] = useState('')
   const [ref, setRef] = useState('')
-  const [account, setAccount] = useState<string>(COD_ACCOUNTS[0])
+  const [method, setMethod] = useState('Cash at hub')
   const [note, setNote] = useState('')
-  const [error, setError] = useState('')
-  const edit = can('Payments', 'Edit')
-  const rider = riders.find((r) => r.id === riderId)
-  const n = Number(amount)
-  const checks: [string, boolean][] = [
-    ['Amount does not exceed the rider’s balance', !!rider && Number.isInteger(n) && n > 0 && n <= rider.cashHeld],
-    ['Reference is unique', ref.trim() !== '' && !f.codRecords.some((c) => c.ref.toLowerCase() === ref.trim().toLowerCase())],
-  ]
-  const pick = (id: string) => { setRiderId(id); setAmount(String(riders.find((r) => r.id === id)?.cashHeld ?? '')); setError('') }
-  const save = () => {
-    const bad = checks.find(([, ok]) => !ok)
-    if (!rider) return setError('There are no riders holding cash.')
-    if (bad) return setError(bad[0] + ' (check the amount and reference).')
-    openModal({
-      title: 'Confirm deposit record?',
-      message: `${kes(n)} will be applied to ${rider.name}’s cash balance.`,
-      confirm: 'Record deposit',
-      onConfirm: () => {
-        const e = f.recordCod(rider.id, n, method, ref, account, note)
-        if (e) return setError(e)
-        toast(`${kes(n)} recorded for ${rider.name}`)
-        navigate('/finance/cod')
-      },
-    })
+  const [errors, setErrors] = useState<Record<string, string>>({})
+  const [busy, setBusy] = useState(false)
+  const owed = data?.owed ?? []
+  const picked = owed.find((r) => r.riderId === riderId)
+  const submit = async () => {
+    const e: Record<string, string> = {}
+    const n = Number(amount)
+    if (!riderId) e.rider = 'Choose a rider'
+    if (!(n > 0)) e.amount = 'Enter the amount in shillings'
+    else if (picked && Math.round(n * 100) > picked.heldCents) e.amount = `They only hold ${money(picked.heldCents)}`
+    if (ref.trim().length < 3) e.ref = 'Enter the receipt or transaction reference'
+    setErrors(e)
+    if (Object.keys(e).length) return
+    setBusy(true)
+    try { await post(`/v1/admin/cash/${riderId}/deposit`, { amountCents: Math.round(n * 100), ref: ref.trim(), method, note: note.trim() }); toast('Deposit recorded'); navigate('/finance/cod') } catch (err) { setErrors({ form: says(err) }) } finally { setBusy(false) }
   }
-  if (!owing.length) return <><PageHead title="Record COD deposit" desc="Log cash or bank deposits from a rider." actions={<Btn onClick={() => navigate('/finance/cod')}>← COD management</Btn>} /><Notice mark="✓" tone="success">No rider is holding cash right now.</Notice></>
   return (
     <>
-      <PageHead title="Record COD deposit" desc="Log cash or bank deposits from a rider against their outstanding balance." actions={<><Btn onClick={() => navigate('/finance/cod')}>← COD management</Btn><Btn variant="primary" disabled={!edit} onClick={save}>Save deposit</Btn></>} />
-      {!edit && <div style={{ marginBottom: 12 }}><Notice>Your role can view cash balances but not record deposits.</Notice></div>}
-      <div className="sp-two">
-        <div className="sp-stack">
-          <Panel title="Deposit details">
-            <div className="sp-form2">
-              <Field label="Rider" value={riderId} onChange={pick} options={owing.map((r) => ({ value: r.id, label: `${r.name} · holds ${kes(r.cashHeld)}` }))} />
-              <Field label="Deposit date" value={new Date(now).toLocaleDateString('en-CA')} onChange={() => undefined} type="date" hint="Deposits are dated today." />
-              <Field label="Amount received (KES)" value={amount} onChange={(v) => { setAmount(v); setError('') }} type="number" />
-              <Field label="Deposit method" value={method} onChange={setMethod} options={COD_METHODS} />
-              <Field label="Reference or receipt number" value={ref} onChange={(v) => { setRef(v); setError('') }} placeholder="For example BK-884120" />
-              <Field label="Received into" value={account} onChange={setAccount} options={COD_ACCOUNTS} />
-            </div>
-            <Field label="Notes" multiline value={note} onChange={setNote} placeholder="Optional" />
-            {error && <div className="sp-err" role="alert">{error}</div>}
-          </Panel>
-        </div>
-        <div className="sp-stack">
-          {rider && (
-            <Panel title="Rider balance">
-              <div className="sp-row" style={{ marginBottom: 6 }}><Person name={rider.name} size={40} /><div><b>{rider.name}</b><div className="panel-sub">{rider.id.toUpperCase()} · {rider.zone}</div></div></div>
-              <Detail label="Cash held">{kes(rider.cashHeld)}</Detail>
-              <Detail label="This deposit">{Number.isFinite(n) ? kes(n) : '—'}</Detail>
-              <Detail label="After this deposit"><span style={{ color: 'var(--green)' }}>{kes(Math.max(0, rider.cashHeld - (Number.isFinite(n) ? n : 0)))}</span></Detail>
-            </Panel>
-          )}
-          <Panel title="Deposit checks">
-            {checks.map(([l, ok]) => <div className="list-row" key={l}><span style={{ fontSize: 11 }}>{l}</span><Badge tone={ok ? 'green' : 'amber'}>{ok ? 'Passed' : 'Check'}</Badge></div>)}
-            <div className="list-row"><span style={{ fontSize: 11 }}>Receipt attachment</span><Badge tone="gray">Optional</Badge></div>
-          </Panel>
-        </div>
-      </div>
+      <PageHead title="Record COD deposit" desc="When a rider hands in the cash they collected." actions={<Btn onClick={() => navigate('/finance/cod')}>Back</Btn>} />
+      {errors.form && <Notice tone="error" mark="!">{errors.form}</Notice>}
+      <Panel title="Deposit">
+        <Field label="Rider" value={riderId} onChange={setRiderId} error={errors.rider} options={[{ value: '', label: owed.length ? 'Choose a rider…' : 'No rider is holding cash' }, ...owed.map((r) => ({ value: r.riderId, label: `${r.rider} · holds ${money(r.heldCents)}` }))]} />
+        <div className="sp-form2"><Field label="Amount received (KES)" value={amount} onChange={setAmount} error={errors.amount} /><Field label="Reference" value={ref} onChange={setRef} error={errors.ref} placeholder="Receipt or M-Pesa code" /></div>
+        <Field label="How it was handed in" value={method} onChange={setMethod} options={['Cash at hub', 'M-Pesa transfer', 'Bank deposit']} />
+        <Field label="Note" value={note} onChange={setNote} />
+        <div className="sp-row end"><Btn variant="primary" disabled={!can('Payments', 'Edit') || busy} onClick={() => void submit()}>Record deposit</Btn></div>
+      </Panel>
     </>
   )
 }
 
-// ---- rider payouts ------------------------------------------------------------------------------------------------
+// ---- rider payouts --------------------------------------------------------------------------------------------------
 
-export function RiderPayouts() {
-  const { payouts, riders, can, toast } = useStore()
-  const f = useFinance()
-  const [status, setStatus] = useState('All payout statuses')
-  const edit = can('Payments', 'Edit')
-  const inDraft = new Map(f.batches.filter((b) => b.status === 'Draft').flatMap((b) => b.payoutIds.map((id) => [id, b.id] as const)))
-  const batchOf = (p: Payout) => f.batches.find((b) => b.payoutIds.includes(p.id))
-  const label = (p: Payout) => (p.status === 'Paid' ? 'Paid' : p.status === 'Failed' ? 'Failed' : inDraft.has(p.id) ? 'In a batch' : 'Pending')
-  const rows = payouts.filter((p) => status === 'All payout statuses' || label(p) === status)
-  const waiting = payouts.filter((p) => label(p) === 'Pending' || label(p) === 'Failed')
+interface Payout { id: string; number: string; riderId: string; rider: string; phone: string; amountCents: number; feeCents: number; status: 'pending' | 'paid' | 'failed'; requestedAt: string; paidAt: string | null; paidBy: string | null; providerRef: string | null; failureReason: string | null }
 
-  const batch = (ids: string[]) => {
-    const id = f.createBatch(ids)
-    if (!id) return toast('Those payouts are already paid or in another batch')
-    navigate(`/finance/batch/${id}`)
-  }
-  const cols: Column<Payout>[] = [
-    { key: 'id', header: 'Payout', render: (p) => <b>{p.id}</b> },
-    { key: 'r', header: 'Rider', sort: (a, b) => a.rider.localeCompare(b.rider), render: (p) => (can('Riders', 'View') ? <button className="link-btn" onClick={() => navigate(`/riders/${p.riderId}`)}>{p.rider}</button> : p.rider) },
-    { key: 'm', header: 'M-Pesa number', render: (p) => mask(riders.find((r) => r.id === p.riderId)?.phone ?? '') },
-    { key: 'a', header: 'Net payout', sort: (a, b) => a.amount - b.amount, render: (p) => <b>{kes(p.amount)}</b> },
-    { key: 'req', header: 'Requested', sort: (a, b) => a.requestedAt - b.requestedAt, render: (p) => dateTime(p.requestedAt) },
-    { key: 'b', header: 'Batch', render: (p) => { const b = batchOf(p); return b ? <button className="link-btn" onClick={() => navigate(`/finance/batch/${b.id}`)}>{b.id}</button> : '—' } },
-    { key: 's', header: 'Status', render: (p) => <Badge tone={label(p) === 'Paid' ? 'green' : label(p) === 'Failed' ? 'red' : label(p) === 'In a batch' ? 'blue' : 'amber'}>{label(p)}</Badge> },
-  ]
-  return (
-    <>
-      <PageHead title="Rider payouts" desc="Review earnings, group them into a batch and send them to M-Pesa." actions={<><Btn onClick={() => navigate('/finance/statements')}>Statements</Btn><Btn variant="primary" disabled={!edit || !waiting.filter((p) => !inDraft.has(p.id)).length} onClick={() => batch(waiting.map((p) => p.id))}>Create payout batch</Btn></>} />
-      <Stats>
-        <Stat label="Awaiting a batch" value={kes(waiting.filter((p) => !inDraft.has(p.id)).reduce((n, p) => n + p.amount, 0))} trend={`${waiting.filter((p) => !inDraft.has(p.id)).length} riders`} icon="₭" up={false} />
-        <Stat label="In a batch, awaiting approval" value={kes(payouts.filter((p) => inDraft.has(p.id)).reduce((n, p) => n + p.amount, 0))} trend={`${f.batches.filter((b) => b.status === 'Draft').length} batches`} icon="✓" />
-        <Stat label="Paid" value={kes(payouts.filter((p) => p.status === 'Paid').reduce((n, p) => n + p.amount, 0))} trend={`${payouts.filter((p) => p.status === 'Paid').length} riders`} icon="↗" />
-        <Stat label="Failed" value={String(payouts.filter((p) => p.status === 'Failed').length)} trend="Add to a new batch to retry" icon="!" up={payouts.every((p) => p.status !== 'Failed')} />
-      </Stats>
-      <DataTable
-        title="Rider payouts"
-        rows={rows}
-        rowKey={(p) => p.id}
-        columns={cols}
-        searchLabel="Search rider name or ID"
-        searchText={(p) => `${p.id} ${p.rider}`}
-        tools={<select className="sp-select auto" aria-label="Payout status" value={status} onChange={(e) => setStatus(e.target.value)}><option>All payout statuses</option><option>Pending</option><option>In a batch</option><option>Paid</option><option>Failed</option></select>}
-        bulk={{ label: 'Add to batch', onClick: (ids) => (edit ? batch(ids) : toast('Your role can’t create batches')) }}
-        actions={(p) => (label(p) === 'Pending' || label(p) === 'Failed' ? <Btn small disabled={!edit} onClick={() => batch([p.id])}>{p.status === 'Failed' ? 'Retry' : 'Batch'}</Btn> : <span className="subtext">{label(p) === 'Paid' ? 'Sent' : 'In batch'}</span>)}
-      />
-    </>
-  )
-}
-
-export function PayoutBatches({ id }: { id?: string }) {
-  const f = useFinance()
-  const { payouts, riders, openModal, toast, can } = useStore()
-  const b = f.batches.find((x) => x.id === id)
-  const edit = can('Payments', 'Edit')
-  if (id && !b) return <NotFoundCard what="Payout batch" back="All batches" onBack={() => navigate('/finance/batch')} />
-  if (!b) {
-    return (
-      <>
-        <PageHead title="Payout batch" desc="Review rider totals and send approved earnings to M-Pesa." actions={<Btn variant="primary" onClick={() => navigate('/payouts')}>Create from rider payouts</Btn>} />
-        {!f.batches.length ? <Notice>No batches yet. Choose riders on the Rider payouts page and create one.</Notice> : (
-          <Panel title="Batches">
-            <div className="table-wrap"><table><thead><tr><th>Batch</th><th>Riders</th><th>Total</th><th>Prepared by</th><th>Status</th><th /></tr></thead>
-              <tbody>{f.batches.map((x) => <tr key={x.id}><td><b>{x.id}</b></td><td>{x.payoutIds.length}</td><td>{kes(payouts.filter((p) => x.payoutIds.includes(p.id)).reduce((n, p) => n + p.amount, 0))}</td><td>{x.createdBy}</td><td><Badge tone={x.status === 'Sent' ? 'green' : 'blue'}>{x.status === 'Sent' ? 'Sent' : 'Ready for approval'}</Badge></td><td><Btn small onClick={() => navigate(`/finance/batch/${x.id}`)}>Open</Btn></td></tr>)}</tbody></table></div>
-          </Panel>
-        )}
-      </>
-    )
-  }
-  return <BatchDetail b={b} edit={edit} riders={riders} payouts={payouts} send={() => openModal({ title: 'Approve and send payout batch?', message: `${kes(payouts.filter((p) => b.payoutIds.includes(p.id)).reduce((n, p) => n + p.amount, 0))} will be sent to ${b.payoutIds.length} riders’ M-Pesa accounts. This can’t be reversed.`, confirm: 'Approve and send', onConfirm: () => { const e = f.sendBatch(b.id); toast(e ?? 'Batch sent to M-Pesa') } })} />
-}
-
-function BatchDetail({ b, edit, riders, payouts, send }: { b: PayoutBatch; edit: boolean; riders: Rider[]; payouts: Payout[]; send: () => void }) {
-  const f = useFinance()
-  const { toast } = useStore()
-  const [all] = useState(() => b.payoutIds)
-  const list = payouts.filter((p) => all.includes(p.id))
-  const [included, setIncluded] = useState<Set<string>>(() => new Set(b.payoutIds))
-  const chosen = list.filter((p) => included.has(p.id))
-  const total = chosen.reduce((n, p) => n + p.amount, 0)
-  const sent = b.status === 'Sent'
-  const toggle = (id: string, on: boolean) => {
-    const next = new Set(included)
-    if (on) next.add(id)
-    else next.delete(id)
-    setIncluded(next)
-    f.updateBatch(b.id, { payoutIds: all.filter((x) => next.has(x)) })
-  }
-  return (
-    <>
-      <PageHead title="Payout batch" desc="Review rider totals and send approved earnings to M-Pesa." actions={<><Btn onClick={() => navigate('/finance/batch')}>← All batches</Btn><Btn variant="primary" disabled={!edit || sent || !chosen.length} onClick={send}>{sent ? 'Sent' : 'Approve and send'}</Btn></>} />
-      <Steps steps={[{ label: 'Select riders', done: true }, { label: 'Review batch', done: true }, { label: 'Send to M-Pesa', done: sent }]} />
-      <div className="sp-two">
-        <div className="sp-stack">
-          <Panel title={`Batch ${b.id}`} sub={`Prepared by ${b.createdBy} · ${when(b.createdAt)}`} right={<Badge tone={sent ? 'green' : 'blue'}>{sent ? 'Sent' : 'Ready for approval'}</Badge>}>
-            <div className="table-wrap"><table><thead><tr><th /><th>Rider</th><th>Net payout</th><th>M-Pesa number</th><th>Result</th></tr></thead>
-              <tbody>{(sent ? payouts.filter((p) => b.payoutIds.includes(p.id)) : list).map((p) => (
-                <tr key={p.id}><td><input type="checkbox" className="table-check" checked={included.has(p.id) || sent} disabled={sent || !edit} aria-label={`Include ${p.rider}`} onChange={(e) => toggle(p.id, e.target.checked)} /></td><td>{p.rider}</td><td><b>{kes(p.amount)}</b></td><td>{mask(riders.find((r) => r.id === p.riderId)?.phone ?? '')}</td><td>{sent ? <Badge tone={p.status === 'Paid' ? 'green' : 'red'}>{p.status === 'Paid' ? 'Paid' : 'Failed'}</Badge> : '—'}</td></tr>
-              ))}</tbody></table></div>
-          </Panel>
-          <Panel title="Approver notes">
-            <textarea className="sp-text" aria-label="Approver notes" placeholder="Add a note for the audit trail" value={b.note} disabled={sent || !edit} onChange={(e) => f.updateBatch(b.id, { note: e.target.value })} />
-            <p className="panel-sub" style={{ marginTop: 6 }}>Notes are visible to finance staff.</p>
-          </Panel>
-        </div>
-        <div className="sp-stack">
-          <Panel title="Batch summary">
-            <Detail label="Riders selected">{chosen.length}</Detail>
-            <Detail label="Processing fee">KES 0</Detail>
-            <div className="sp-detail"><span>Total to send</span><b className="fin-total">{kes(total)}</b></div>
-            {sent && <Detail label="Approved by">{b.approvedBy}</Detail>}
-          </Panel>
-          {!sent && <Notice tone="warning" mark="!">Check rider numbers and amounts before approving. M-Pesa payouts can’t be recalled once sent. The person who prepared a batch can’t approve it unless they’re an owner.</Notice>}
-          {sent && list.some((p) => p.status === 'Failed') && <Notice tone="error" mark="!">Some payouts failed. Add them to a new batch from Rider payouts after checking the rider’s number.</Notice>}
-          <Btn onClick={() => { downloadCsv(`${b.id}.csv`, ['Rider', 'M-Pesa', 'Amount (KES)'], chosen.map((p) => [p.rider, mask(riders.find((r) => r.id === p.riderId)?.phone ?? ''), p.amount])); toast('Batch file downloaded') }}>Download batch file</Btn>
-        </div>
-      </div>
-    </>
-  )
-}
-
-// ---- earnings statements ----------------------------------------------------------------------------------------------
-
-interface Statement { id: string; rider: Rider; period: string; idx: number; trips: Order[]; earnings: number }
-
-export function EarningsStatements() {
-  const { orders, riders, zones, payouts, openDrawer, toast, can } = useStore()
-  const now = useNow()
-  const [period, setPeriod] = useState('All periods')
-  const [paid, setPaid] = useState('All payment statuses')
-  const d = new Date(now)
-  const halves = (() => {
-    const y = d.getFullYear(), m = d.getMonth()
-    const mk = (yy: number, mm: number, h: 1 | 2) => ({ from: new Date(yy, mm, h === 1 ? 1 : 16).getTime(), to: h === 1 ? new Date(yy, mm, 16).getTime() : new Date(yy, mm + 1, 1).getTime(), label: `${monthLabel(monthKey(new Date(yy, mm, 1).getTime())).slice(0, 3)} ${h === 1 ? '1–15' : '16–end'}` })
-    const list = d.getDate() >= 16 ? [mk(y, m, 2), mk(y, m, 1)] : [mk(y, m, 1)]
-    const prev = new Date(y, m - 1, 1)
-    return [...list, mk(prev.getFullYear(), prev.getMonth(), 2), mk(prev.getFullYear(), prev.getMonth(), 1)]
-  })()
-  const rows: Statement[] = halves.flatMap((h, idx) =>
-    riders.flatMap((r) => {
-      const trips = orders.filter((o) => o.riderId === r.id && o.status === 'Delivered' && o.placedAt >= h.from && o.placedAt < h.to)
-      if (!trips.length) return []
-      const earnings = trips.reduce((n, o) => n + o.fee * ((zones.find((z) => z.name === o.area)?.commission ?? 85) / 100), 0)
-      return [{ id: `ES-${monthKey(h.from).replace('-', '')}${h.label.includes('1–15') ? 'A' : 'B'}-${r.id.toUpperCase()}`, rider: r, period: h.label, idx, trips, earnings: Math.round(earnings) }]
-    }),
-  )
-  const state = (s: Statement) => (s.idx === 0 ? 'Accruing' : payouts.some((p) => p.riderId === s.rider.id && p.status !== 'Paid') && s.idx === 1 ? 'Pending' : 'Paid')
-  const shown = rows.filter((s) => (period === 'All periods' || s.period === period) && (paid === 'All payment statuses' || state(s) === paid))
-  const csv = (s: Statement) => { downloadCsv(`${s.id}.csv`, ['Order', 'Area', 'Delivery fee (KES)', 'Rider earning (KES)'], s.trips.map((o) => [o.id, o.area, o.fee, Math.round(o.fee * ((zones.find((z) => z.name === o.area)?.commission ?? 85) / 100))])); toast('Statement downloaded') }
-  const cols: Column<Statement>[] = [
-    { key: 'id', header: 'Statement', render: (s) => <b>{s.id}</b> },
-    { key: 'r', header: 'Rider', sort: (a, b) => a.rider.name.localeCompare(b.rider.name), render: (s) => s.rider.name },
-    { key: 'p', header: 'Period', render: (s) => s.period },
-    { key: 'd', header: 'Deliveries', sort: (a, b) => a.trips.length - b.trips.length, render: (s) => s.trips.length },
-    { key: 'e', header: 'Delivery earnings', sort: (a, b) => a.earnings - b.earnings, render: (s) => <b>{kes(s.earnings)}</b> },
-    { key: 's', header: 'Payment', render: (s) => <Badge tone={state(s) === 'Paid' ? 'green' : state(s) === 'Pending' ? 'amber' : 'blue'}>{state(s)}</Badge> },
-  ]
-  return (
-    <>
-      <PageHead title="Rider earnings statements" desc="Rider-level earnings from delivery fees, with payment status." actions={<><Btn disabled={!can('Payments', 'Export')} onClick={() => { downloadCsv('earnings-statements.csv', ['Statement', 'Rider', 'Period', 'Deliveries', 'Earnings (KES)', 'Payment'], shown.map((s) => [s.id, s.rider.name, s.period, s.trips.length, s.earnings, state(s)])); toast('Statements exported') }}>Export statements</Btn><Btn variant="primary" onClick={() => navigate('/payouts')}>Review payouts</Btn></>} />
-      <div style={{ marginBottom: 12 }}><Notice>Earnings are the rider’s share of each delivery fee, set per zone. Tips and incentives will be added once the rider app reports them.</Notice></div>
-      <DataTable
-        title={`${shown.length} statements`}
-        rows={shown}
-        rowKey={(s) => s.id}
-        columns={cols}
-        searchLabel="Search rider or statement ID"
-        searchText={(s) => `${s.id} ${s.rider.name}`}
-        tools={<><select className="sp-select auto" aria-label="Period" value={period} onChange={(e) => setPeriod(e.target.value)}><option>All periods</option>{halves.map((h) => <option key={h.label}>{h.label}</option>)}</select><select className="sp-select auto" aria-label="Payment status" value={paid} onChange={(e) => setPaid(e.target.value)}><option>All payment statuses</option><option>Accruing</option><option>Pending</option><option>Paid</option></select></>}
-        actions={(s) => <Btn small onClick={() => openDrawer({ title: `Statement ${s.id}`, body: <><Detail label="Rider">{s.rider.name}</Detail><Detail label="Period">{s.period}</Detail><Detail label="Deliveries">{s.trips.length}</Detail><Detail label="Earnings">{kes(s.earnings)}</Detail><div className="table-wrap" style={{ marginTop: 10 }}><table><thead><tr><th>Order</th><th>Area</th><th>Fee</th></tr></thead><tbody>{s.trips.map((o) => <tr key={o.id}><td>{o.id}</td><td>{o.area}</td><td>{kes(o.fee)}</td></tr>)}</tbody></table></div><div style={{ marginTop: 10 }}><Btn onClick={() => csv(s)}>Download CSV</Btn></div></> })}>View</Btn>}
-      />
-    </>
-  )
-}
-
-// ---- store settlements ----------------------------------------------------------------------------------------------------
-
-function PayStoreForm({ s }: { s: Settlement }) {
-  const f = useFinance()
+function PayForm({ p, onDone }: { p: Payout; onDone: () => void }) {
   const { closeModal, toast } = useStore()
   const [ref, setRef] = useState('')
   const [err, setErr] = useState('')
+  const go = async () => { try { await post(`/v1/admin/payouts/${p.id}/paid`, { providerRef: ref.trim() }); onDone(); closeModal(); toast('Marked as paid') } catch (e) { setErr(says(e)) } }
   return (
     <>
-      <Detail label="Store">{s.store}</Detail><Detail label="Period">{monthLabel(s.month)}</Detail><Detail label="Net payable">{kes(s.net)}</Detail>
-      <div style={{ marginTop: 12 }}><Field label="Bank or M-Pesa reference" value={ref} onChange={(v) => { setRef(v); setErr('') }} error={err} /></div>
-      <div className="sp-row end"><Btn onClick={closeModal}>Cancel</Btn><Btn variant="primary" onClick={() => { if (!ref.trim()) return setErr('Enter the payment reference'); f.paySettlement(s.id, ref.trim()); closeModal(); toast(`${s.store} marked as paid`) }}>Mark as paid</Btn></div>
+      <Notice mark="i">{`Pay ${p.rider} ${money(p.amountCents)} to ${p.phone} from the M-Pesa portal, then enter the M-Pesa code here.`}</Notice>
+      <Field label="M-Pesa transaction code" value={ref} onChange={(v) => { setRef(v); setErr('') }} error={err} />
+      <div className="actions" style={{ justifyContent: 'flex-end' }}><Btn onClick={closeModal}>Cancel</Btn><Btn variant="primary" onClick={() => void go()}>Mark as paid</Btn></div>
+    </>
+  )
+}
+function FailForm({ p, onDone }: { p: Payout; onDone: () => void }) {
+  const { closeModal, toast } = useStore()
+  const [reason, setReason] = useState('')
+  const [err, setErr] = useState('')
+  const go = async () => { try { await post(`/v1/admin/payouts/${p.id}/failed`, { reason: reason.trim() }); onDone(); closeModal(); toast('Marked as failed. The money is back in their balance.') } catch (e) { setErr(says(e)) } }
+  return (
+    <>
+      <Field label="What went wrong?" value={reason} onChange={(v) => { setReason(v); setErr('') }} error={err} />
+      <div className="actions" style={{ justifyContent: 'flex-end' }}><Btn onClick={closeModal}>Cancel</Btn><Btn variant="danger" onClick={() => void go()}>Mark as failed</Btn></div>
+    </>
+  )
+}
+
+export function RiderPayouts() {
+  const { can, openModal } = useStore()
+  const [status, setStatus] = useState('pending')
+  const { data, failed, loading, reload } = useGet<{ items: Payout[]; totals: Record<string, { count: number; cents: number }> }>(`/v1/admin/payouts?limit=200${status ? `&status=${status}` : ''}`, 60_000)
+  const edit = can('Payments', 'Edit')
+  const cols: Column<Payout>[] = [
+    { key: 'n', header: 'Payout', render: (p) => p.number },
+    { key: 'r', header: 'Rider', render: (p) => <div><b>{p.rider}</b><div className="subtext">{p.phone}</div></div> },
+    { key: 'a', header: 'Amount', sort: (a, b) => a.amountCents - b.amountCents, render: (p) => <b>{money(p.amountCents)}</b> },
+    { key: 'f', header: 'Fee', render: (p) => money(p.feeCents) },
+    { key: 's', header: 'Status', render: (p) => <Badge tone={p.status === 'paid' ? 'green' : p.status === 'failed' ? 'red' : 'amber'}>{p.status}</Badge> },
+    { key: 'w', header: 'Requested', render: (p) => dateTime(Date.parse(p.requestedAt)) },
+    { key: 'ref', header: 'Reference', render: (p) => p.providerRef ?? p.failureReason ?? '—' },
+  ]
+  return (
+    <>
+      <PageHead title="Rider payouts" desc="Riders ask to withdraw their earnings. Pay them from the M-Pesa portal and record the code here." actions={<Btn onClick={reload}>Refresh</Btn>} />
+      <div className="tile-row"><Stat label="Waiting to be paid" value={money(data?.totals.pending?.cents ?? 0)} trend={`${data?.totals.pending?.count ?? 0} requests`} icon="◷" up={(data?.totals.pending?.count ?? 0) === 0} /><Stat label="Paid" value={money(data?.totals.paid?.cents ?? 0)} trend={`${data?.totals.paid?.count ?? 0} payouts`} icon="✓" /></div>
+      <DataTable title="Payouts" rows={data?.items ?? []} rowKey={(p) => p.id} columns={cols} loading={loading} error={failed && !data ? 'We couldn’t load the payouts.' : undefined} onRetry={reload} searchLabel="Search payouts" searchText={(p) => `${p.number} ${p.rider} ${p.phone}`} emptyTitle="No payouts" empty="Withdrawal requests from riders appear here."
+        tools={<select className="select" aria-label="Status" value={status} onChange={(e) => setStatus(e.target.value)}><option value="">All</option><option value="pending">Waiting</option><option value="paid">Paid</option><option value="failed">Failed</option></select>}
+        actions={(p) => (p.status === 'pending' ? <div className="sp-row"><Btn small variant="primary" disabled={!edit} onClick={() => openModal({ title: `Pay ${p.number}`, body: <PayForm p={p} onDone={reload} />, noActions: true })}>Mark paid</Btn><Btn small disabled={!edit} onClick={() => openModal({ title: `Fail ${p.number}`, body: <FailForm p={p} onDone={reload} />, noActions: true })}>It failed</Btn></div> : null)} />
+    </>
+  )
+}
+
+// ---- payout batches -------------------------------------------------------------------------------------------------
+
+interface Batch { id: string; number: string; status: string; note: string; createdBy: string; createdAt: string; approvedBy: string | null; sentAt: string | null; payouts: number; totalCents: number; failed: number }
+interface BatchFull { id: string; number: string; status: string; note: string; createdBy: string; createdById: string; sentAt: string | null; totalCents: number; items: { payoutId: string; number: string; rider: string; phone: string; amountCents: number; status: string; outcome: string | null; providerRef: string | null; failureReason: string | null }[] }
+
+export function PayoutBatches({ id }: { id?: string }) {
+  const { can, toast } = useStore()
+  const list = useGet<{ items: Batch[] }>('/v1/admin/payout-batches')
+  const open = useGet<{ items: Payout[] }>(id ? null : '/v1/admin/payouts?status=pending&limit=200')
+  const one = useGet<BatchFull>(id ? `/v1/admin/payout-batches/${id}` : null)
+  const [picked, setPicked] = useState<Record<string, boolean>>({})
+  const [note, setNote] = useState('')
+  const [busy, setBusy] = useState(false)
+  const edit = can('Payments', 'Edit')
+  const run = async (what: () => Promise<unknown>, done: string, then?: () => void) => { setBusy(true); try { await what(); toast(done); list.reload(); one.reload(); open.reload(); then?.() } catch (e) { toast(says(e)) } finally { setBusy(false) } }
+
+  if (id) {
+    const b = one.data
+    if (!b) return <PageHead title="Payout batch" desc={one.failed ? 'We couldn’t load this batch.' : 'Loading…'} actions={<Btn onClick={() => navigate('/finance/batch')}>Back</Btn>} />
+    return (
+      <>
+        <PageHead title={b.number} desc={`${b.items.length} payouts · ${money(b.totalCents)} · prepared by ${b.createdBy}`}
+          actions={<><Btn onClick={() => navigate('/finance/batch')}>Back to batches</Btn>
+            {b.status !== 'sent' && <Btn variant="danger" disabled={!edit || busy} onClick={() => void run(() => del(`/v1/admin/payout-batches/${id}`), 'Batch deleted', () => navigate('/finance/batch'))}>Delete</Btn>}
+            {b.status !== 'sent' && <Btn variant="primary" disabled={!edit || busy} onClick={() => void run(() => post(`/v1/admin/payout-batches/${id}/send`), 'Batch sent')}>Approve and send</Btn>}</>} />
+        <Notice mark="i">Someone other than the person who prepared a batch must approve it. If sending money from here isn’t connected yet, pay each rider from the M-Pesa portal and mark it paid on the Rider payouts page.</Notice>
+        <div style={{ marginTop: 12 }}><Panel title="Payouts in this batch">{b.items.map((i) => <SettingRow key={i.payoutId} title={`${i.rider} · ${money(i.amountCents)}`} sub={`${i.number} · ${i.phone}${i.providerRef ? ` · ${i.providerRef}` : ''}${i.failureReason ? ` · ${i.failureReason}` : ''}`} right={<Badge tone={i.outcome === 'paid' || i.status === 'paid' ? 'green' : i.outcome === 'failed' ? 'red' : 'amber'}>{i.outcome ?? i.status}</Badge>} />)}</Panel></div>
+      </>
+    )
+  }
+  const available = open.data?.items ?? []
+  const chosen = available.filter((p) => picked[p.id])
+  const cols: Column<Batch>[] = [
+    { key: 'n', header: 'Batch', render: (b) => <button className="link-btn" onClick={() => navigate(`/finance/batch/${b.id}`)}>{b.number}</button> },
+    { key: 'p', header: 'Payouts', render: (b) => b.payouts },
+    { key: 't', header: 'Total', render: (b) => <b>{money(b.totalCents)}</b> },
+    { key: 's', header: 'Status', render: (b) => <Badge tone={b.status === 'sent' ? (b.failed ? 'amber' : 'green') : 'blue'}>{b.status === 'sent' ? (b.failed ? `Sent · ${b.failed} failed` : 'Sent') : 'Ready to approve'}</Badge> },
+    { key: 'c', header: 'Prepared by', render: (b) => b.createdBy },
+    { key: 'a', header: 'Created', render: (b) => dateTime(Date.parse(b.createdAt)) },
+  ]
+  return (
+    <>
+      <PageHead title="Payout batches" desc="Group rider payouts, have a second person approve them, and send." />
+      <DataTable title="Batches" rows={list.data?.items ?? []} rowKey={(b) => b.id} columns={cols} loading={list.loading} error={list.failed && !list.data ? 'We couldn’t load the batches.' : undefined} onRetry={list.reload} searchLabel="Search batches" searchText={(b) => `${b.number} ${b.createdBy}`} emptyTitle="No batches yet" empty="Create one from the waiting payouts below."
+        actions={(b) => <Btn small onClick={() => navigate(`/finance/batch/${b.id}`)}>Open</Btn>} />
+      <div style={{ marginTop: 14 }}>
+        <Panel title="Waiting payouts" sub="Tick the ones to put in a new batch">
+          {available.length === 0 && <div className="panel-sub">No payouts are waiting.</div>}
+          {available.map((p) => <label key={p.id} className="list-row" style={{ cursor: 'pointer' }}><span><strong>{p.rider}</strong><small>{p.number} · {p.phone}</small></span><span className="sp-row"><b>{money(p.amountCents)}</b><input type="checkbox" aria-label={`Include ${p.number}`} checked={!!picked[p.id]} onChange={(e) => setPicked((x) => ({ ...x, [p.id]: e.target.checked }))} /></span></label>)}
+          {available.length > 0 && <><Field label="Note (optional)" value={note} onChange={setNote} /><div className="sp-row end"><Btn variant="primary" disabled={!edit || busy || !chosen.length} onClick={() => void run(async () => { const b = await post<{ id: string }>('/v1/admin/payout-batches', { payoutIds: chosen.map((p) => p.id), note: note.trim() }); setPicked({}); setNote(''); navigate(`/finance/batch/${b.id}`) }, 'Batch created')}>{`Create a batch of ${chosen.length}`}</Btn></div></>}
+        </Panel>
+      </div>
+    </>
+  )
+}
+
+// ---- rider earnings -------------------------------------------------------------------------------------------------
+
+export function EarningsStatements() {
+  const { toast } = useStore()
+  const riders = useGet<{ items: ApiRider[] }>('/v1/admin/riders?status=approved&limit=200')
+  const [sel, setSel] = useState<string | null>(null)
+  const ledger = useGet<{ items: { id: string; kind: string; amountCents: number; note: string; by: string; at: string }[] }>(sel ? `/v1/admin/riders/${sel}/ledger` : null)
+  const cols: Column<ApiRider>[] = [
+    { key: 'n', header: 'Rider', render: (r) => <button className="link-btn" onClick={() => setSel(r.id)}>{r.name}</button> },
+    { key: 'd', header: 'Deliveries', sort: (a, b) => a.deliveries - b.deliveries, render: (r) => r.deliveries },
+    { key: 'e', header: 'Balance to pay out', sort: (a, b) => a.earningsBalanceCents - b.earningsBalanceCents, render: (r) => <b>{money(r.earningsBalanceCents)}</b> },
+    { key: 'c', header: 'Cash held', render: (r) => money(r.cashHeldCents) },
+  ]
+  const rows = riders.data?.items ?? []
+  return (
+    <>
+      <PageHead title="Rider earnings statements" desc="What each rider has earned and what is still to be paid." actions={<Btn disabled={!rows.length} onClick={() => { downloadCsv('rider-earnings.csv', ['Rider', 'Deliveries', 'Balance (KES)', 'Cash held (KES)'], rows.map((r) => [r.name, r.deliveries, shillings(r.earningsBalanceCents), shillings(r.cashHeldCents)])); toast('Exported') }}>Export</Btn>} />
+      <div className="sp-two">
+        <DataTable title="Riders" rows={rows} rowKey={(r) => r.id} columns={cols} loading={riders.loading} error={riders.failed && !riders.data ? 'We couldn’t load the riders.' : undefined} searchLabel="Search riders" searchText={(r) => r.name} emptyTitle="No riders" empty="Approved riders appear here." actions={(r) => <Btn small onClick={() => setSel(r.id)}>Statement</Btn>} />
+        {sel && (
+          <Panel title="Statement" sub={rows.find((r) => r.id === sel)?.name}>
+            {ledger.loading && <div className="panel-sub">Loading…</div>}
+            {ledger.data?.items.length === 0 && <div className="panel-sub">No entries yet.</div>}
+            {ledger.data?.items.map((e) => <SettingRow key={e.id} title={`${e.kind}${e.note ? ` · ${e.note}` : ''}`} sub={`${dateTime(Date.parse(e.at))}${e.by ? ` · ${e.by}` : ''}`} right={<b style={{ color: e.amountCents < 0 ? 'var(--red)' : 'var(--green)' }}>{e.amountCents < 0 ? '−' : '+'}{money(Math.abs(e.amountCents))}</b>} />)}
+          </Panel>
+        )}
+      </div>
+    </>
+  )
+}
+
+// ---- store settlements ----------------------------------------------------------------------------------------------
+
+interface Settlement { id: string; store: string; month: string; orders: number; salesCents: number; commissionCents: number; netCents: number; commissionRate: number; paid: { at: string; ref: string; by: string } | null }
+
+function SettleForm({ s, onDone }: { s: Settlement; onDone: () => void }) {
+  const { closeModal, toast } = useStore()
+  const [ref, setRef] = useState('')
+  const [err, setErr] = useState('')
+  const go = async () => { try { await post(`/v1/admin/settlements/${s.id}/pay`, { ref: ref.trim() }); onDone(); closeModal(); toast('Settlement marked as paid') } catch (e) { setErr(says(e)) } }
+  return (
+    <>
+      <Notice mark="i">{`Pay ${s.store} ${money(s.netCents)} for ${monthName(s.month)}, then enter the payment reference.`}</Notice>
+      <Field label="Payment reference" value={ref} onChange={(v) => { setRef(v); setErr('') }} error={err} />
+      <div className="actions" style={{ justifyContent: 'flex-end' }}><Btn onClick={closeModal}>Cancel</Btn><Btn variant="primary" onClick={() => void go()}>Mark as paid</Btn></div>
     </>
   )
 }
 
 export function StoreSettlements() {
-  const f = useFinance()
-  const { openModal, can, toast } = useStore()
-  const edit = can('Payments', 'Edit')
-  const unpaid = f.settlements.filter((s) => !s.paid)
+  const { can, openModal } = useStore()
+  const { data, failed, loading, reload } = useGet<{ items: Settlement[]; payableCents: number }>('/v1/admin/settlements', 60_000)
   const cols: Column<Settlement>[] = [
-    { key: 's', header: 'Store', sort: (a, b) => a.store.localeCompare(b.store), render: (s) => <><b>{s.store}</b><span className="sp-sub">{s.id}</span></> },
-    { key: 'm', header: 'Month', render: (s) => monthLabel(s.month) },
-    { key: 'o', header: 'Delivered orders', render: (s) => s.orders },
-    { key: 'g', header: 'Product sales', sort: (a, b) => a.sales - b.sales, render: (s) => kes(s.sales) },
-    { key: 'c', header: `Commission (${f.settings.storeCommission}%)`, render: (s) => kes(s.commission) },
-    { key: 'n', header: 'Net payable', sort: (a, b) => a.net - b.net, render: (s) => <b>{kes(s.net)}</b> },
-    { key: 'st', header: 'Status', render: (s) => (s.paid ? <Badge tone="green">{`Paid · ${s.paid.ref}`}</Badge> : <Badge tone="amber">Payable</Badge>) },
+    { key: 's', header: 'Store', render: (s) => <div><b>{s.store}</b><div className="subtext">{s.id}</div></div> },
+    { key: 'm', header: 'Month', render: (s) => monthName(s.month) },
+    { key: 'o', header: 'Orders', render: (s) => s.orders },
+    { key: 'sa', header: 'Sales', render: (s) => money(s.salesCents) },
+    { key: 'c', header: `Commission`, render: (s) => `${money(s.commissionCents)} (${s.commissionRate}%)` },
+    { key: 'n', header: 'To pay', render: (s) => <b>{money(s.netCents)}</b> },
+    { key: 'p', header: 'Status', render: (s) => (s.paid ? <Badge tone="green">{`Paid · ${s.paid.ref}`}</Badge> : <Badge tone="amber">To pay</Badge>) },
   ]
   return (
     <>
-      <PageHead title="Store settlements" desc="What ShopCore owes the partner stores it collects orders from, after its commission." actions={<><Btn onClick={() => navigate('/finance/settings')}>Commission settings</Btn><Btn disabled={!can('Payments', 'Export')} onClick={() => { downloadCsv('store-settlements.csv', ['Store', 'Month', 'Orders', 'Sales', 'Commission', 'Net payable', 'Status'], f.settlements.map((s) => [s.store, s.month, s.orders, s.sales, s.commission, s.net, s.paid ? 'Paid' : 'Payable'])); toast('Settlements exported') }}>Export</Btn></>} />
-      <Stats>
-        <Stat label="Payable to stores" value={kes(unpaid.reduce((n, s) => n + s.net, 0))} trend={`${unpaid.length} settlements`} icon="◈" up={unpaid.length === 0} />
-        <Stat label="Commission earned" value={kes(f.settlements.reduce((n, s) => n + s.commission, 0))} trend={`${f.settings.storeCommission}% of product sales`} icon="%" />
-        <Stat label="Paid out" value={kes(f.settlements.filter((s) => s.paid).reduce((n, s) => n + s.net, 0))} trend={`${f.settlements.filter((s) => s.paid).length} settlements`} icon="✓" />
-      </Stats>
-      <DataTable
-        title="Settlements"
-        rows={f.settlements}
-        rowKey={(s) => s.id}
-        columns={cols}
-        searchLabel="Search store"
-        searchText={(s) => `${s.store} ${s.month}`}
-        actions={(s) => (s.paid ? <span className="subtext">{when(s.paid.at)}</span> : <Btn small disabled={!edit} onClick={() => openModal({ title: `Pay ${s.store}`, body: <PayStoreForm s={s} />, noActions: true })}>Mark paid</Btn>)}
-        empty="No delivered orders to settle yet."
-      />
+      <PageHead title="Store settlements" desc="What each store is owed for the orders it fulfilled, after ShopCore’s commission." actions={<Btn onClick={reload}>Refresh</Btn>} />
+      <div className="tile-row"><Stat label="To pay stores" value={data ? money(data.payableCents) : '—'} trend="Unpaid settlements" icon="◈" up={(data?.payableCents ?? 0) === 0} /></div>
+      <DataTable title="Settlements" rows={data?.items ?? []} rowKey={(s) => s.id} columns={cols} loading={loading} error={failed && !data ? 'We couldn’t load the settlements.' : undefined} onRetry={reload} searchLabel="Search settlements" searchText={(s) => `${s.store} ${s.month}`} emptyTitle="Nothing to settle" empty="Settlements appear once orders are delivered."
+        actions={(s) => (s.paid ? null : <Btn small variant="primary" disabled={!can('Payments', 'Edit')} onClick={() => openModal({ title: `Pay ${s.store}`, body: <SettleForm s={s} onDone={reload} />, noActions: true })}>Mark paid</Btn>)} />
     </>
   )
 }
+

@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react'
 
-import { monthKey, monthLabel, shiftMonth } from '../data/finance'
+import { monthKey, monthLabel, shiftMonth } from '../lib/months'
 
 /** A row of stat tiles that wraps nicely at any count. */
 export const Stats = ({ children }: { children: ReactNode }) => (

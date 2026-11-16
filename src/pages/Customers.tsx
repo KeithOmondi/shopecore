@@ -1,46 +1,92 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 import { AvatarTile, Badge, Btn, DataTable, downloadCsv, Field, Notice, PageHead, Panel, SettingRow, Stat, type Column } from '../components/ui'
-import { initials, kes, type Customer } from '../data/seed'
-import { dateTime } from '../lib/format'
+import { ApiError, get, patch, post } from '../lib/api'
+import { dateTime, kes } from '../lib/format'
 import { navigate } from '../lib/router'
 import { useStore } from '../lib/store'
 
+interface Row {
+  id: string; name: string; email: string; phone: string; area: string; street: string; orders: number; spentCents: number
+  segment: 'new' | 'returning'; lastOrderAt: string | null; joinedAt: string; version: number
+}
+interface Detail extends Row {
+  addresses: { id: string; label: string; name: string; phone: string; county: string; area: string; street: string; isDefault: boolean }[]
+  recentOrders: { id: string; number: string; totalCents: number; status: string; at: string }[]
+  notes: { id: string; text: string; by: string; at: string }[]
+}
+
+const says = (e: unknown) => (e instanceof ApiError ? e.message : 'Something went wrong. Try again.')
+const shillings = (c: number) => c / 100
+const initialsOf = (name: string) => name.split(/\s+/).filter(Boolean).map((p) => p[0]).join('').slice(0, 2).toUpperCase() || '?'
+const display = (c: { name: string; email: string; phone: string }) => c.name || c.email || c.phone || 'Customer'
+const segmentLabel = (s: Row['segment']) => (s === 'returning' ? 'Returning' : 'New')
+const statusTone = (s: string) => (s === 'Delivered' ? 'green' : s === 'Cancelled' ? 'red' : s === 'Pending' ? 'amber' : 'blue')
+
 export function CustomersList() {
-  const { customers, toast, can } = useStore()
+  const { toast, can } = useStore()
+  const [rows, setRows] = useState<Row[]>([])
+  const [next, setNext] = useState<string | null>(null)
+  const [state, setState] = useState<'loading' | 'ready' | 'error'>('loading')
   const [segment, setSegment] = useState('All segments')
-  const [spend, setSpend] = useState('Any spend')
+  const [more, setMore] = useState(false)
+  const [tick, setTick] = useState(0)
+  const seq = useRef(0)
 
-  const rows = customers.filter((c) => (segment === 'All segments' || c.segment === segment) && (spend === 'Any spend' || c.spent > 20000))
+  useEffect(() => {
+    const mine = ++seq.current
+    const params = new URLSearchParams({ limit: '100' })
+    if (segment !== 'All segments') params.set('segment', segment.toLowerCase())
+    void get<{ items: Row[]; nextCursor: string | null }>(`/v1/admin/customers?${params}`).then(
+      (r) => { if (mine === seq.current) { setRows(r.items); setNext(r.nextCursor); setState('ready') } },
+      () => { if (mine === seq.current) setState((cur) => (cur === 'ready' ? cur : 'error')) },
+    )
+  }, [segment, tick])
 
-  const columns: Column<Customer>[] = [
+  const loadMore = async () => {
+    if (!next) return
+    setMore(true)
+    try {
+      const params = new URLSearchParams({ limit: '100', cursor: next })
+      if (segment !== 'All segments') params.set('segment', segment.toLowerCase())
+      const r = await get<{ items: Row[]; nextCursor: string | null }>(`/v1/admin/customers?${params}`)
+      setRows((x) => [...x, ...r.items])
+      setNext(r.nextCursor)
+    } catch (e) { toast(says(e)) } finally { setMore(false) }
+  }
+
+  const columns: Column<Row>[] = [
     {
-      key: 'customer', header: 'Customer', sort: (a, b) => a.name.localeCompare(b.name),
+      key: 'customer', header: 'Customer', sort: (a, b) => display(a).localeCompare(display(b)),
       render: (c) => (
         <div className="product-cell">
-          <AvatarTile text={initials(c.name)} />
+          <AvatarTile text={initialsOf(display(c))} />
           <div>
-            <div className="prod-name">{c.name}</div>
+            <div className="prod-name">{display(c)}</div>
             <div className="subtext">{c.email}</div>
           </div>
         </div>
       ),
     },
     { key: 'phone', header: 'Phone', render: (c) => c.phone },
+    { key: 'area', header: 'Area', render: (c) => c.area || '—' },
     { key: 'orders', header: 'Orders', sort: (a, b) => a.orders - b.orders, render: (c) => c.orders },
-    { key: 'spent', header: 'Total spent', sort: (a, b) => a.spent - b.spent, render: (c) => <b>{kes(c.spent)}</b> },
-    { key: 'segment', header: 'Segment', sort: (a, b) => a.segment.localeCompare(b.segment), render: (c) => <Badge tone={c.segment === 'Returning' ? 'green' : 'blue'}>{c.segment}</Badge> },
+    { key: 'spent', header: 'Total spent', sort: (a, b) => a.spentCents - b.spentCents, render: (c) => <b>{kes(shillings(c.spentCents))}</b> },
+    { key: 'segment', header: 'Segment', sort: (a, b) => a.segment.localeCompare(b.segment), render: (c) => <Badge tone={c.segment === 'returning' ? 'green' : 'blue'}>{segmentLabel(c.segment)}</Badge> },
   ]
 
   return (
     <>
       <PageHead
         title="Customers list"
-        desc="View customer profiles, activity, and lifetime value."
+        desc="People who have signed up in the ShopCore app, with their orders and lifetime value."
         actions={
-          <Btn disabled={!can('Customers', 'Export')} onClick={() => { downloadCsv('customers.csv', ['Name', 'Email', 'Phone', 'Orders', 'Total spent (KES)', 'Segment'], rows.map((c) => [c.name, c.email, c.phone, c.orders, c.spent, c.segment])); toast('Customer export started') }}>
-            Export customers
-          </Btn>
+          <>
+            <Btn onClick={() => setTick((n) => n + 1)}>Refresh</Btn>
+            <Btn disabled={!can('Customers', 'Export') || !rows.length} onClick={() => { downloadCsv('customers.csv', ['Name', 'Email', 'Phone', 'Area', 'Orders', 'Total spent (KES)', 'Segment'], rows.map((c) => [c.name, c.email, c.phone, c.area, c.orders, shillings(c.spentCents), segmentLabel(c.segment)])); toast('Customers exported') }}>
+              Export customers
+            </Btn>
+          </>
         }
       />
       <DataTable
@@ -48,109 +94,113 @@ export function CustomersList() {
         rows={rows}
         rowKey={(c) => c.id}
         columns={columns}
+        loading={state === 'loading'}
+        error={state === 'error' ? 'We couldn’t load the customers.' : undefined}
+        onRetry={() => { setState('loading'); setTick((n) => n + 1) }}
         searchLabel="Search customers"
-        searchText={(c) => `${c.name} ${c.email} ${c.phone}`}
+        emptyTitle="No customers yet"
+        empty="Customers appear here when they sign up in the app."
+        searchText={(c) => `${c.name} ${c.email} ${c.phone} ${c.area}`}
         tools={
-          <>
-            <select className="select" aria-label="Segment" value={segment} onChange={(e) => setSegment(e.target.value)}>
-              <option>All segments</option><option>Returning</option><option>New</option>
-            </select>
-            <select className="select" aria-label="Spend" value={spend} onChange={(e) => setSpend(e.target.value)}>
-              <option>Any spend</option><option>Over KES 20,000</option>
-            </select>
-          </>
+          <select className="select" aria-label="Segment" value={segment} onChange={(e) => { setState('loading'); setSegment(e.target.value) }}>
+            <option>All segments</option><option>Returning</option><option>New</option>
+          </select>
         }
         actions={(c) => <Btn small onClick={() => navigate(`/customers/${c.id}`)}>View</Btn>}
       />
+      {next && <div style={{ textAlign: 'center', margin: '12px 0' }}><Btn disabled={more} onClick={() => void loadMore()}>{more ? 'Loading…' : 'Load more customers'}</Btn></div>}
     </>
   )
 }
 
-function NoteForm({ customer }: { customer: Customer }) {
-  const { addNote, closeModal, toast } = useStore()
+function NoteForm({ customer, onSaved }: { customer: Detail; onSaved: (d: Detail) => void }) {
+  const { closeModal, toast } = useStore()
   const [text, setText] = useState('')
   const [error, setError] = useState('')
-  const save = () => {
+  const [busy, setBusy] = useState(false)
+  const save = async () => {
     if (text.trim().length < 3) return setError('Write a note first')
-    addNote(customer.id, text.trim())
-    closeModal()
-    toast('Note added')
+    setBusy(true)
+    try { onSaved(await post<Detail>(`/v1/admin/customers/${customer.id}/notes`, { text: text.trim() })); closeModal(); toast('Note added') } catch (e) { setError(says(e)) } finally { setBusy(false) }
   }
   return (
     <>
-      <Field label="Private note" multiline value={text} onChange={(v) => { setText(v); setError('') }} placeholder={`Add a private note to ${customer.name}’s profile`} error={error} />
+      <Field label="Private note" multiline value={text} onChange={(v) => { setText(v); setError('') }} placeholder={`Add a private note to ${display(customer)}’s profile`} error={error} />
       <div className="actions" style={{ justifyContent: 'flex-end' }}>
         <Btn onClick={closeModal}>Cancel</Btn>
-        <Btn variant="primary" onClick={save}>Save note</Btn>
+        <Btn variant="primary" disabled={busy} onClick={() => void save()}>Save note</Btn>
       </div>
     </>
   )
 }
 
-function AddressForm({ customer, onSave }: { customer: Customer; onSave: (p: Partial<Customer>) => void }) {
-  const { closeModal } = useStore()
-  const [street, setStreet] = useState(customer.street)
+function DetailsForm({ customer, onSaved }: { customer: Detail; onSaved: (d: Detail) => void }) {
+  const { closeModal, toast } = useStore()
+  const [name, setName] = useState(customer.name)
   const [area, setArea] = useState(customer.area)
+  const [street, setStreet] = useState(customer.street)
   const [error, setError] = useState('')
+  const [busy, setBusy] = useState(false)
+  const save = async () => {
+    setBusy(true)
+    try { onSaved(await patch<Detail>(`/v1/admin/customers/${customer.id}`, { name: name.trim(), area: area.trim(), street: street.trim() })); closeModal(); toast('Customer updated') } catch (e) { setError(says(e)) } finally { setBusy(false) }
+  }
   return (
     <>
+      <Field label="Name" value={name} onChange={setName} />
       <Field label="Area" value={area} onChange={setArea} />
       <Field label="Street and landmark" value={street} onChange={(v) => { setStreet(v); setError('') }} error={error} />
       <div className="actions" style={{ justifyContent: 'flex-end' }}>
         <Btn onClick={closeModal}>Cancel</Btn>
-        <Btn variant="primary" onClick={() => { if (street.trim().length < 3 || area.trim().length < 2) return setError('Enter the area and street'); onSave({ street: street.trim(), area: area.trim() }); closeModal() }}>Save address</Btn>
-      </div>
-    </>
-  )
-}
-
-function WalletActivity({ customer }: { customer: Customer }) {
-  const rows: [string, number, string][] = [
-    ['Refund · ' + (customer.recent[2]?.id ?? 'SC-2630'), 625, 'Today, 8:32 AM'],
-    ['Order payment · ' + (customer.recent[1]?.id ?? 'SC-2701'), -400, '18 Oct, 5:10 PM'],
-    ['Top-up via M-Pesa', 1000, '12 Oct, 11:02 AM'],
-  ]
-  return (
-    <>
-      <Notice>Balance {kes(customer.wallet)}. Wallet credits come from refunds and top-ups.</Notice>
-      <div style={{ marginTop: 12 }}>
-        {rows.map(([t, a, w]) => <SettingRow key={t} title={t} sub={w} right={<b style={{ color: a < 0 ? 'var(--red)' : 'var(--green)' }}>{a < 0 ? '−' : '+'}{kes(Math.abs(a))}</b>} />)}
+        <Btn variant="primary" disabled={busy} onClick={() => void save()}>Save</Btn>
       </div>
     </>
   )
 }
 
 export function CustomerDetail({ id }: { id: string }) {
-  const { customers, openModal, openDrawer, closeDrawer, toast, orders, can, updateCustomer, log } = useStore()
-  const c = customers.find((x) => x.id === id)
+  const { openModal, openDrawer, closeDrawer, can } = useStore()
+  const [c, setC] = useState<Detail | null>(null)
+  const [state, setState] = useState<'loading' | 'ready' | 'missing' | 'error'>('loading')
+
+  useEffect(() => {
+    void get<Detail>(`/v1/admin/customers/${id}`).then(
+      (d) => { setC(d); setState('ready') },
+      (e) => setState(e instanceof ApiError && e.status === 404 ? 'missing' : 'error'),
+    )
+  }, [id])
+
+  if (state === 'loading') return <PageHead title="Customer detail" desc="Loading…" actions={<Btn onClick={() => navigate('/customers')}>Back to customers</Btn>} />
   if (!c) {
     return (
       <>
-        <PageHead title="Customer detail" desc="That customer doesn’t exist." actions={<Btn onClick={() => navigate('/customers')}>Back to customers</Btn>} />
-        <Notice tone="warning" mark="!">We couldn’t find this customer.</Notice>
+        <PageHead title="Customer detail" desc={state === 'error' ? 'We couldn’t load this customer.' : 'That customer doesn’t exist.'} actions={<Btn onClick={() => navigate('/customers')}>Back to customers</Btn>} />
+        <Notice tone="warning" mark="!">{state === 'error' ? 'Check your connection and try again.' : 'We couldn’t find this customer.'}</Notice>
       </>
     )
   }
-  const theirs = orders.filter((o) => o.customerId === c.id).slice(0, 5)
-  const addNote = () => openModal({ title: 'Add customer note', message: `Visible to your staff only.`, body: <NoteForm customer={c} />, noActions: true })
+  const edit = can('Customers', 'Edit')
+  const addNote = () => openModal({ title: 'Add customer note', message: 'Visible to your staff only.', body: <NoteForm customer={c} onSaved={setC} />, noActions: true })
 
   return (
     <>
       <PageHead
         title="Customer detail"
-        desc={`Customer profile · Added ${c.added}`}
+        desc={`Customer profile · Joined ${dateTime(Date.parse(c.joinedAt))}`}
         actions={
           <>
-            <Btn disabled={!can('Customers', 'Edit')} onClick={addNote}>Add note</Btn>
+            <Btn onClick={() => navigate('/customers')}>Back to customers</Btn>
+            <Btn disabled={!edit} onClick={() => openModal({ title: 'Edit customer', body: <DetailsForm customer={c} onSaved={setC} />, noActions: true })}>Edit</Btn>
+            <Btn disabled={!edit} onClick={addNote}>Add note</Btn>
             <Btn
               onClick={() =>
                 openDrawer({
                   title: 'Customer actions',
                   body: (
                     <>
-                      <SettingRow title="Email customer" sub={c.email} right={<Btn small onClick={() => { closeDrawer(); window.location.href = `mailto:${c.email}` }}>Open</Btn>} />
-                      <SettingRow title="Call customer" sub={c.phone} right={<Btn small onClick={() => { closeDrawer(); window.location.href = `tel:${c.phone.replace(/\s/g, '')}` }}>Call</Btn>} />
-                      <SettingRow title="Export profile" sub="Download this customer as CSV" right={<Btn small onClick={() => { downloadCsv(`${c.name}.csv`, ['Name', 'Email', 'Phone', 'Orders', 'Total spent (KES)'], [[c.name, c.email, c.phone, c.orders, c.spent]]); closeDrawer(); toast('Profile exported') }}>Export</Btn>} />
+                      {!!c.email && <SettingRow title="Email customer" sub={c.email} right={<Btn small onClick={() => { closeDrawer(); window.location.href = `mailto:${c.email}` }}>Open</Btn>} />}
+                      {!!c.phone && <SettingRow title="Call customer" sub={c.phone} right={<Btn small onClick={() => { closeDrawer(); window.location.href = `tel:${c.phone.replace(/\s/g, '')}` }}>Call</Btn>} />}
+                      <SettingRow title="Export profile" sub="Download this customer as CSV" right={<Btn small onClick={() => { downloadCsv(`${display(c)}.csv`, ['Name', 'Email', 'Phone', 'Orders', 'Total spent (KES)'], [[c.name, c.email, c.phone, c.orders, shillings(c.spentCents)]]); closeDrawer() }}>Download</Btn>} />
                     </>
                   ),
                 })
@@ -162,21 +212,18 @@ export function CustomerDetail({ id }: { id: string }) {
       />
       <div className="grid" style={{ gridTemplateColumns: 'minmax(0,1.55fr) minmax(270px,.8fr)', alignItems: 'start' }}>
         <div className="grid">
-          <Panel
-            right={<Badge tone={c.segment === 'Returning' ? 'green' : 'blue'}>{c.segment}</Badge>}
-            title=""
-            className="">
+          <Panel right={<Badge tone={c.segment === 'returning' ? 'green' : 'blue'}>{segmentLabel(c.segment)}</Badge>} title="" className="">
             <div className="product-cell" style={{ marginBottom: 14 }}>
-              <AvatarTile text={initials(c.name)} size={42} />
+              <AvatarTile text={initialsOf(display(c))} size={42} />
               <div>
-                <h2 style={{ fontSize: 14 }}>{c.name}</h2>
-                <div className="panel-sub">{c.email} · {c.phone}</div>
+                <h2 style={{ fontSize: 14 }}>{display(c)}</h2>
+                <div className="panel-sub">{[c.email, c.phone].filter(Boolean).join(' · ')}</div>
               </div>
             </div>
             <div className="grid stats" style={{ gridTemplateColumns: 'repeat(3,minmax(0,1fr))', margin: 0 }}>
-              <Stat label="Orders" value={String(c.orders)} trend="Lifetime" icon="▣" />
-              <Stat label="Lifetime spend" value={kes(c.spent)} trend="Across all orders" icon="◈" />
-              <Stat label="Wallet balance" value={kes(c.wallet)} trend="Available" icon="◉" />
+              <Stat label="Orders" value={String(c.orders)} trend="Not counting cancelled" icon="▣" />
+              <Stat label="Lifetime spend" value={kes(shillings(c.spentCents))} trend="Paid orders" icon="◈" />
+              <Stat label="Last order" value={c.lastOrderAt ? dateTime(Date.parse(c.lastOrderAt)) : 'None yet'} trend="Most recent" icon="◉" />
             </div>
           </Panel>
 
@@ -189,41 +236,42 @@ export function CustomerDetail({ id }: { id: string }) {
               <table>
                 <thead><tr><th>Order</th><th>Date</th><th>Total</th><th>Status</th></tr></thead>
                 <tbody>
-                  {theirs.map((o) => (
+                  {c.recentOrders.map((o) => (
                     <tr key={o.id}>
-                      <td>{can('Orders', 'View') ? <button className="link-btn" onClick={() => navigate(`/orders/${o.id}`)}>{o.id}</button> : o.id}</td>
-                      <td>{dateTime(o.placedAt)}</td>
-                      <td>{kes(o.total)}</td>
-                      <td><Badge tone={o.status === 'Delivered' ? 'green' : o.status === 'Cancelled' || o.status === 'Refunded' ? 'red' : 'amber'}>{o.status}</Badge></td>
+                      <td>{can('Orders', 'View') ? <button className="link-btn" onClick={() => navigate(`/orders/${o.id}`)}>{o.number}</button> : o.number}</td>
+                      <td>{dateTime(Date.parse(o.at))}</td>
+                      <td>{kes(shillings(o.totalCents))}</td>
+                      <td><Badge tone={statusTone(o.status)}>{o.status}</Badge></td>
                     </tr>
                   ))}
-                  {theirs.length === 0 && <tr><td colSpan={4} style={{ textAlign: 'center', padding: 22, color: 'var(--muted)' }}>No orders yet.</td></tr>}
+                  {c.recentOrders.length === 0 && <tr><td colSpan={4} style={{ textAlign: 'center', padding: 22, color: 'var(--muted)' }}>No orders yet.</td></tr>}
                 </tbody>
               </table>
             </div>
           </section>
 
-          <Panel title="Private notes" sub="Visible to your staff only" right={<Btn small disabled={!can('Customers', 'Edit')} onClick={addNote}>+ Add note</Btn>}>
-            {c.notes.length === 0 ? <div className="panel-sub">No notes yet.</div> : c.notes.map((n, i) => (
-              <div key={i} style={{ marginBottom: 8 }}>
-                <Notice mark={n.by.slice(0, 2).toUpperCase()}>{n.text} Added by {n.by} · {n.at}</Notice>
+          <Panel title="Private notes" sub="Visible to your staff only" right={<Btn small disabled={!edit} onClick={addNote}>+ Add note</Btn>}>
+            {c.notes.length === 0 ? <div className="panel-sub">No notes yet.</div> : c.notes.map((n) => (
+              <div key={n.id} style={{ marginBottom: 8 }}>
+                <Notice mark={n.by.slice(0, 2).toUpperCase()}>{n.text} Added by {n.by} · {dateTime(Date.parse(n.at))}</Notice>
               </div>
             ))}
           </Panel>
         </div>
 
         <div className="grid">
-          <Panel title="Saved addresses" right={<Btn small disabled={!can('Customers', 'Edit')} onClick={() => openModal({ title: 'Edit saved address', body: <AddressForm customer={c} onSave={(patch) => { updateCustomer(c.id, patch); log(`Edited address · ${c.name}`, 'Customers'); toast('Address updated') }} />, noActions: true })}>Edit</Btn>}>
-            <div className="list-row">
-              <span><strong>Home</strong><small>{c.area}, Nairobi</small></span>
-              <Badge tone="blue">Default</Badge>
-            </div>
-            <div className="subtext" style={{ paddingTop: 8 }}>{c.street}</div>
-          </Panel>
-          <Panel title="Wallet" right={<span className="stat-icon">K</span>}>
-            <div className="stat-value">{kes(c.wallet)}</div>
-            <div className="panel-sub">Last updated today at 8:32 AM</div>
-            <button className="btn" style={{ marginTop: 12 }} onClick={() => openDrawer({ title: `${c.name} · wallet`, body: <WalletActivity customer={c} /> })}>View wallet activity</button>
+          <Panel title="Saved addresses">
+            {c.addresses.length === 0 && <div className="panel-sub">{c.street ? `${c.street}, ${c.area}` : 'No saved addresses.'}</div>}
+            {c.addresses.map((a) => (
+              <div key={a.id} style={{ marginBottom: 10 }}>
+                <div className="list-row">
+                  <span><strong>{a.label}</strong><small>{a.area}, {a.county}</small></span>
+                  {a.isDefault && <Badge tone="blue">Default</Badge>}
+                </div>
+                <div className="subtext" style={{ paddingTop: 4 }}>{a.street}</div>
+                <div className="subtext">{a.name} · {a.phone}</div>
+              </div>
+            ))}
           </Panel>
         </div>
       </div>

@@ -3,11 +3,10 @@ import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
 import { useFocusTrap } from '../lib/focus-trap'
 
 import { ROLES, type Role } from '../data/seed'
-import { canOpen, displayLabel, homeOf, navigate, NAV_GROUPS, pageFor, ROLE_PAGE_COUNT, usePath } from '../lib/router'
+import { canOpen, displayLabel, homeOf, navigate, NAV_GROUPS, pageFor, plainGroup, ROLE_PAGE_COUNT, usePath } from '../lib/router'
 import { useStore } from '../lib/store'
-import { useInventory } from '../lib/inventory'
-import { useSupport } from '../lib/support'
-import { AvatarTile, Badge, Btn, Notice, SettingRow } from './ui'
+import { get } from '../lib/api'
+import { AvatarTile, Btn, Notice, SettingRow } from './ui'
 
 const nameInitials = (n: string) => n.split(/s+/).map((p) => p[0] ?? '').join('').slice(0, 2).toUpperCase()
 
@@ -15,9 +14,26 @@ export function Sidebar() {
   const { role, collapsed, toggleCollapsed, permissions, user } = useStore()
   const path = usePath()
   const allowed = { has: (label: string) => canOpen(role, label, permissions[role]) }
-  const { tickets, chats } = useSupport()
-  const { alerts } = useInventory()
-  const counts = { alerts: alerts.length, tickets: tickets.filter((t) => t.kind === 'Customer' && t.status !== 'Resolved').length, chats: chats.filter((c) => !c.closed).reduce((n, c) => n + c.unread, 0) }
+  const [supportCounts, setSupportCounts] = useState({ tickets: 0, chats: 0 })
+  useEffect(() => {
+    if (!allowed.has('Tickets inbox')) return
+    const run = () => void get<{ tickets: { open: number }; chats: { waiting: number } }>('/v1/admin/support/overview').then((r) => setSupportCounts({ tickets: r.tickets.open, chats: r.chats.waiting }), () => undefined)
+    run()
+    const t = setInterval(run, 60_000)
+    return () => clearInterval(t)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [role])
+  // How many products are running low, from the server (checked each minute).
+  const [lowCount, setLowCount] = useState(0)
+  useEffect(() => {
+    if (!allowed.has('Low-stock alerts and reorder settings')) return
+    const run = () => void get<{ items: unknown[] }>('/v1/admin/stock/alerts').then((r) => setLowCount(r.items.length), () => undefined)
+    run()
+    const t = setInterval(run, 60_000)
+    return () => clearInterval(t)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [role])
+  const counts = { alerts: lowCount, tickets: supportCounts.tickets, chats: supportCounts.chats }
 
   const seen = new Set<string>()
   const home = homeOf(role, permissions[role])
@@ -41,7 +57,7 @@ export function Sidebar() {
           if (!items.length) return null
           return (
             <section className="nav-group" key={g.label}>
-              <div className="nav-label">{g.label}</div>
+              <div className="nav-label">{plainGroup(g.label)}</div>
               <div className="nav">
                 {items.map((i) => (
                   <button key={i.label} className={i.match(path) || (path === '/' && i.path === home.path) ? 'active' : ''} aria-current={i.match(path) || (path === '/' && i.path === home.path) ? 'page' : undefined} aria-label={displayLabel(i.label, role, permissions[role])} title={displayLabel(i.label, role, permissions[role])} onClick={() => navigate(i.path)}>
@@ -69,36 +85,43 @@ export function Sidebar() {
 }
 
 export function Topbar() {
-  const { role, dark, toggleDark, openDrawer, toast, customers, staff, orders, products, riders, permissions, user } = useStore()
+  const { role, dark, toggleDark, openDrawer, toast, staff, permissions, user } = useStore()
   const path = usePath()
   const [q, setQ] = useState('')
 
+  /** Looks across the real records. Only what the person's role may open is searched. */
   const search = (e: KeyboardEvent<HTMLInputElement>) => {
     if (e.key !== 'Enter') return
-    const needle = q.trim().toLowerCase()
+    const term = q.trim()
+    const needle = term.toLowerCase()
     if (!needle) return toast('Enter a search term')
-    const mayCustomers = canOpen(role, 'Customers list', permissions[role])
-    const mayStaff = canOpen(role, 'Staff list', permissions[role])
-    const c = !mayCustomers ? [] : customers.filter((x) => `${x.name} ${x.email} ${x.phone}`.toLowerCase().includes(needle)).slice(0, 6)
-    const s = !mayStaff ? [] : staff.filter((x) => `${x.name} ${x.email} ${x.role}`.toLowerCase().includes(needle)).slice(0, 6)
-    const pages = NAV_GROUPS.flatMap((g) => g.items).filter((i) => canOpen(role, i.label, permissions[role]) && i.label.toLowerCase().includes(needle))
-    const o = canOpen(role, 'Orders', permissions[role]) ? orders.filter((x) => `${x.id} ${x.customer}`.toLowerCase().includes(needle)).slice(0, 6) : []
-    const pr = canOpen(role, 'Products', permissions[role]) ? products.filter((x) => `${x.name} ${x.sku}`.toLowerCase().includes(needle)).slice(0, 6) : []
-    const rd = canOpen(role, 'Riders', permissions[role]) ? riders.filter((x) => `${x.name} ${x.plate}`.toLowerCase().includes(needle)).slice(0, 6) : []
-    openDrawer({
-      title: `Results for “${q.trim()}”`,
-      body: (
-        <ResultList
-          groups={[
-            { title: 'Pages', rows: pages.map((p) => ({ key: p.label, label: p.label, sub: '', go: p.path })) },
-            { title: 'Customers', rows: c.map((x) => ({ key: x.id, label: x.name, sub: x.email, go: `/customers/${x.id}` })) },
-            { title: 'Staff', rows: s.map((x) => ({ key: x.id, label: x.name, sub: x.role, go: `/staff/${x.id}` })) },
-            { title: 'Orders', rows: o.map((x) => ({ key: x.id, label: x.id, sub: `${x.customer} · ${x.status}`, go: `/orders/${x.id}` })) },
-            { title: 'Products', rows: pr.map((x) => ({ key: x.id, label: x.name, sub: x.sku, go: `/products/${x.id}` })) },
-            { title: 'Riders', rows: rd.map((x) => ({ key: x.id, label: x.name, sub: `${x.vehicle} · ${x.zone}`, go: `/riders/${x.id}` })) },
-          ]}
-        />
-      ),
+    const may = (label: string) => canOpen(role, label, permissions[role])
+    const pages = NAV_GROUPS.flatMap((g) => g.items).filter((i) => may(i.label) && (i.label.toLowerCase().includes(needle) || displayLabel(i.label, role, permissions[role]).toLowerCase().includes(needle)))
+    const staffRows = !may('Staff list') ? [] : staff.filter((x) => `${x.name} ${x.email} ${x.role}`.toLowerCase().includes(needle)).slice(0, 6)
+    const enc = encodeURIComponent(term)
+    const ask = <T,>(allowed: boolean, path: string) => (allowed ? get<{ items: T[] }>(path).then((r) => r.items.slice(0, 6), () => [] as T[]) : Promise.resolve([] as T[]))
+    openDrawer({ title: `Results for “${term}”`, body: <Notice>Searching…</Notice> })
+    void Promise.all([
+      ask<{ id: string; name: string; email: string; phone: string }>(may('Customers list'), `/v1/admin/customers?limit=6&q=${enc}`),
+      ask<{ id: string; number: string; customer: string; status: string }>(may('Orders'), `/v1/admin/orders?limit=6&q=${enc}`),
+      ask<{ id: string; name: string; sku: string }>(may('Products'), `/v1/admin/products?limit=6&q=${enc}`),
+      ask<{ id: string; name: string; vehicle: string; zone: string | null; status: string }>(may('Riders'), `/v1/admin/riders?limit=6&q=${enc}`),
+    ]).then(([c, o, pr, rd]) => {
+      openDrawer({
+        title: `Results for “${term}”`,
+        body: (
+          <ResultList
+            groups={[
+              { title: 'Pages', rows: pages.map((p) => ({ key: p.label, label: displayLabel(p.label, role, permissions[role]), sub: '', go: p.path })) },
+              { title: 'Customers', rows: c.map((x) => ({ key: x.id, label: x.name || x.email || x.phone, sub: x.email || x.phone, go: `/customers/${x.id}` })) },
+              { title: 'Staff', rows: staffRows.map((x) => ({ key: x.id, label: x.name, sub: x.role, go: `/staff/${x.id}` })) },
+              { title: 'Orders', rows: o.map((x) => ({ key: x.id, label: x.number, sub: `${x.customer} · ${x.status}`, go: `/orders/${x.id}` })) },
+              { title: 'Products', rows: pr.map((x) => ({ key: x.id, label: x.name, sub: x.sku, go: `/products/${x.id}` })) },
+              { title: 'Riders', rows: rd.map((x) => ({ key: x.id, label: x.name, sub: `${x.vehicle}${x.zone ? ` · ${x.zone}` : ''}`, go: `/riders/${x.id}` })) },
+            ]}
+          />
+        ),
+      })
     })
   }
 
@@ -158,21 +181,42 @@ function ResultList({ groups }: { groups: { title: string; rows: { key: string; 
   )
 }
 
+/** What needs the person's attention, worked out from the live records they are allowed to see. */
 function Notifications() {
-  const { closeDrawer, integrations, staff, role, permissions } = useStore()
-  const mayHealth = canOpen(role, 'Backup and system health', permissions[role])
-  const mayStaff = canOpen(role, 'Staff list', permissions[role])
-  const degraded = mayHealth ? integrations.filter((i) => i.status !== 'Connected') : []
-  const invites = mayStaff ? staff.filter((s) => s.status === 'Invited') : []
+  const { closeDrawer, staff, role, permissions } = useStore()
+  const may = (label: string) => canOpen(role, label, permissions[role])
+  const [items, setItems] = useState<{ key: string; title: string; sub: string; to: string }[] | null>(null)
+  useEffect(() => {
+    let live = true
+    const none = Promise.resolve(null)
+    void Promise.all([
+      may('Tickets inbox') ? get<{ tickets: { open: number; breached: number }; chats: { waiting: number }; claims: { refundsToReview: number; returnsToReview: number; openDisputes: number } }>('/v1/admin/support/overview').catch(() => null) : none,
+      may('Low-stock alerts and reorder settings') ? get<{ items: unknown[] }>('/v1/admin/stock/alerts').catch(() => null) : none,
+      may('Order queue') ? get<{ unassigned: unknown[] }>('/v1/admin/dispatch/board').catch(() => null) : none,
+      may('Finance overview') ? get<{ attention: { key: string; label: string; to: string }[] }>('/v1/admin/finance/overview').catch(() => null) : none,
+    ]).then(([sup, low, board, fin]) => {
+      if (!live) return
+      const out: { key: string; title: string; sub: string; to: string }[] = []
+      if (sup && sup.tickets.breached > 0) out.push({ key: 'late', title: `${sup.tickets.breached} ticket${sup.tickets.breached === 1 ? '' : 's'} past the reply deadline`, sub: 'Customers are waiting', to: '/support/tickets' })
+      if (sup && sup.chats.waiting > 0) out.push({ key: 'chat', title: `${sup.chats.waiting} chat${sup.chats.waiting === 1 ? '' : 's'} waiting`, sub: 'A customer is waiting for a reply', to: '/support/chat' })
+      if (sup && sup.claims.refundsToReview + sup.claims.returnsToReview > 0) out.push({ key: 'claims', title: `${sup.claims.refundsToReview + sup.claims.returnsToReview} refund or return request${sup.claims.refundsToReview + sup.claims.returnsToReview === 1 ? '' : 's'} to review`, sub: 'Waiting for a decision', to: '/support/refunds' })
+      if (sup && sup.claims.openDisputes > 0) out.push({ key: 'disputes', title: `${sup.claims.openDisputes} open dispute${sup.claims.openDisputes === 1 ? '' : 's'}`, sub: 'Customer and rider disagree', to: '/support/disputes' })
+      if (low && low.items.length > 0) out.push({ key: 'low', title: `${low.items.length} product${low.items.length === 1 ? ' is' : 's are'} running low`, sub: 'Time to reorder', to: '/inventory/alerts' })
+      if (board && board.unassigned.length > 0) out.push({ key: 'rider', title: `${board.unassigned.length} order${board.unassigned.length === 1 ? '' : 's'} waiting for a rider`, sub: 'Assign a rider', to: '/dispatch/queue' })
+      for (const x of fin?.attention ?? []) out.push({ key: x.key, title: x.label, sub: 'Finance', to: x.to.startsWith('/finance') ? x.to : '/finance' })
+      const invites = may('Staff list') ? staff.filter((m) => m.status === 'Invited') : []
+      if (invites.length) out.push({ key: 'invites', title: `${invites.length} staff haven’t signed in yet`, sub: invites.map((m) => m.name).join(', '), to: '/staff' })
+      setItems(out)
+    })
+    return () => { live = false }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [role])
   const go = (p: string) => () => { closeDrawer(); navigate(p) }
   return (
     <>
-      {degraded.map((i) => (
-        <SettingRow key={i.id} title={`${i.name} is ${i.status.toLowerCase()}`} sub={i.note} right={<Btn small onClick={go('/integrations')}>Review</Btn>} />
-      ))}
-      {invites.length > 0 && <SettingRow title={`${invites.length} staff haven’t signed in yet`} sub={invites.map((s) => s.name).join(', ')} right={<Btn small onClick={go('/staff')}>View</Btn>} />}
-      {mayHealth && <SettingRow title="Backup completed" sub="Today at 02:00 EAT · 1.2 GB" right={<Badge>Complete</Badge>} />}
-      {!degraded.length && !invites.length && <Notice mark="✓" tone="success">You’re all caught up.</Notice>}
+      {items === null && <Notice>Checking…</Notice>}
+      {items?.map((i) => <SettingRow key={i.key} title={i.title} sub={i.sub} right={<Btn small onClick={go(i.to)}>Open</Btn>} />)}
+      {items?.length === 0 && <Notice mark="✓" tone="success">You’re all caught up.</Notice>}
     </>
   )
 }

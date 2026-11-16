@@ -1,4 +1,5 @@
 import { useId, useMemo, useState, type ChangeEvent, type ReactNode } from 'react'
+import { plainTitle } from '../lib/router'
 
 import { EmptyState, ErrorState, SearchEmpty, SkeletonRows } from './states'
 
@@ -23,8 +24,7 @@ export function PageHead({ title, desc, actions }: { title: string; desc: string
   return (
     <div className="page-head">
       <div>
-        <p className="eyebrow">ShopCore / {title}</p>
-        <h1>{title}</h1>
+        <h1>{plainTitle(title)}</h1>
         <p>{desc}</p>
       </div>
       <div className="actions">{actions}</div>

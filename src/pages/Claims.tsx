@@ -1,195 +1,99 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 
-import { ago, Detail, Label, NotFoundCard, Person, PriorityTag, TimelineItem, useNow, when } from '../components/support-ui'
-import { Badge, Btn, DataTable, downloadCsv, Field, Notice, PageHead, Panel, Stat, type Column } from '../components/ui'
-import { PRIORITIES, type Dispute, type Refund, type ReturnRequest } from '../data/support'
+import { Badge, Btn, DataTable, Field, Notice, PageHead, Panel, SettingRow, Stat, type Column } from '../components/ui'
+import { ApiError, get, openFile, post } from '../lib/api'
 import { kes } from '../lib/format'
-import { navigate, useQuery } from '../lib/router'
+import { navigate } from '../lib/router'
 import { useStore } from '../lib/store'
-import { REFUND_LIMIT, useSupport } from '../lib/support'
+import { useGet } from '../lib/use-get'
 
-const refundTone = (s: Refund['status']) => (s === 'Needs review' ? 'amber' : s === 'Rejected' ? 'red' : 'green')
-const order = { Urgent: 0, High: 1, Normal: 2, Low: 3 } as const
+const says = (e: unknown) => (e instanceof ApiError ? e.message : 'Something went wrong. Try again.')
+const shillings = (c: number) => c / 100
+const ago = (iso: string) => {
+  const m = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 60_000))
+  return m < 60 ? `${Math.max(1, m)} min ago` : m < 1440 ? `${Math.round(m / 60)} h ago` : `${Math.round(m / 1440)} d ago`
+}
 
-// ---- refunds -----------------------------------------------------------------------------------------
+// ---- refunds --------------------------------------------------------------------------------------------------------
+
+interface Refund {
+  id: string; number: string; orderId: string; order: string; customerId: string; customer: string; amountCents: number; reason: string; priority: string
+  status: 'needs_review' | 'approved' | 'partly_approved' | 'rejected'; openedBy: string; submittedAt: string; orderTotalCents: number; alreadyRefundedCents: number
+  decision: { by: string | null; at: string; amountCents: number; reason: string } | null
+}
+interface RefundFull extends Refund { items: string[]; notes: { text: string; by: string; at: string }[] }
+const REFUND_TEXT = { needs_review: 'Needs review', approved: 'Approved', partly_approved: 'Partly approved', rejected: 'Rejected' } as const
+const refundTone = (s: Refund['status']) => (s === 'needs_review' ? 'amber' : s === 'rejected' ? 'red' : 'green')
 
 export function RefundsList() {
-  const { refunds } = useSupport()
-  const now = useNow()
-  const [status, setStatus] = useState('Needs review')
-  const [reason, setReason] = useState('All reasons')
-  const [priority, setPriority] = useState('All priorities')
-  const waiting = refunds.filter((r) => r.status === 'Needs review')
-  const decided = refunds.filter((r) => r.decision && r.decision.amount >= 0)
-  const times = decided.map((r) => r.decision!.at - r.submittedAt).sort((a, b) => a - b)
-  const median = times.length ? times[Math.floor(times.length / 2)]! : 0
-  const reasons = [...new Set(refunds.map((r) => r.reason))]
-  const rows = refunds.filter((r) => (status === 'All statuses' || r.status === status) && (reason === 'All reasons' || r.reason === reason) && (priority === 'All priorities' || r.priority === priority))
+  const [status, setStatus] = useState('needs_review')
+  const { data, failed, loading, reload } = useGet<{ items: Refund[] }>(`/v1/admin/refunds?limit=100${status ? `&status=${status}` : ''}`, 30_000)
+  const items = data?.items ?? []
   const cols: Column<Refund>[] = [
-    { key: 'id', header: 'Request', sort: (a, b) => a.id.localeCompare(b.id), render: (r) => <button className="sp-link" onClick={() => navigate(`/support/refunds/${r.id}`)}>{r.id}</button> },
-    { key: 'order', header: 'Order', render: (r) => r.orderId },
-    { key: 'cust', header: 'Customer', sort: (a, b) => a.customerName.localeCompare(b.customerName), render: (r) => r.customerName },
-    { key: 'amt', header: 'Amount', sort: (a, b) => a.amount - b.amount, render: (r) => kes(r.amount) },
-    { key: 'why', header: 'Reason', render: (r) => r.reason },
-    { key: 'at', header: 'Submitted', sort: (a, b) => a.submittedAt - b.submittedAt, render: (r) => when(r.submittedAt) },
-    { key: 'pri', header: 'Priority', sort: (a, b) => order[a.priority] - order[b.priority], render: (r) => <PriorityTag p={r.priority} /> },
-    { key: 'st', header: 'Status', render: (r) => <Badge tone={refundTone(r.status)}>{r.status}</Badge> },
+    { key: 'n', header: 'Request', render: (r) => <button className="sp-link" onClick={() => navigate(`/support/refunds/${r.id}`)}>{r.number}</button> },
+    { key: 'o', header: 'Order', render: (r) => r.order },
+    { key: 'c', header: 'Customer', render: (r) => r.customer },
+    { key: 'a', header: 'Amount', sort: (a, b) => a.amountCents - b.amountCents, render: (r) => <b>{kes(shillings(r.amountCents))}</b> },
+    { key: 'r', header: 'Reason', render: (r) => r.reason },
+    { key: 's', header: 'Status', render: (r) => <Badge tone={refundTone(r.status)}>{REFUND_TEXT[r.status]}</Badge> },
+    { key: 'w', header: 'Asked', sort: (a, b) => Date.parse(a.submittedAt) - Date.parse(b.submittedAt), render: (r) => ago(r.submittedAt) },
   ]
   return (
     <>
-      <PageHead title="Refund requests" desc="Review customer claims and issue full or partial refunds." actions={<Btn onClick={() => downloadCsv('refund-requests.csv', ['Request', 'Order', 'Customer', 'Amount', 'Reason', 'Status'], rows.map((r) => [r.id, r.orderId, r.customerName, r.amount, r.reason, r.status]))}>Export</Btn>} />
-      <div className="sp-stats3">
-        <Stat label="Awaiting review" value={String(waiting.length)} trend={`${waiting.filter((r) => now - r.submittedAt < 86_400_000).length} submitted today`} icon="↶" />
-        <Stat label="Pending value" value={kes(waiting.reduce((n, r) => n + r.amount, 0))} trend={`Across ${waiting.length} requests`} icon="K" />
-        <Stat label="Median decision time" value={times.length ? (median >= 3_600_000 ? `${Math.floor(median / 3_600_000)}h ${Math.round((median % 3_600_000) / 60_000)}m` : `${Math.round(median / 60_000)}m`) : '—'} trend={times.length ? `${times.length} decided` : 'No decisions yet'} icon="◷" />
-      </div>
-      <DataTable
-        title={`${waiting.length} requests awaiting review`}
-        rows={rows}
-        rowKey={(r) => r.id}
-        columns={cols}
-        searchLabel="Search refunds"
-        searchText={(r) => `${r.id} ${r.orderId} ${r.customerName} ${r.reason}`}
-        tools={
-          <>
-            <select className="sp-select auto" aria-label="Filter by status" value={status} onChange={(e) => setStatus(e.target.value)}><option>All statuses</option><option>Needs review</option><option>Approved</option><option>Partly approved</option><option>Rejected</option></select>
-            <select className="sp-select auto" aria-label="Filter by reason" value={reason} onChange={(e) => setReason(e.target.value)}><option>All reasons</option>{reasons.map((r) => <option key={r}>{r}</option>)}</select>
-            <select className="sp-select auto" aria-label="Filter by priority" value={priority} onChange={(e) => setPriority(e.target.value)}><option>All priorities</option>{PRIORITIES.map((p) => <option key={p}>{p}</option>)}</select>
-          </>
-        }
-        actions={(r) => <Btn small onClick={() => navigate(`/support/refunds/${r.id}`)}>{r.status === 'Needs review' ? 'Review' : 'View'}</Btn>}
-        empty="No refund requests match these filters."
-      />
-    </>
-  )
-}
-
-function RejectForm({ id }: { id: string }) {
-  const { decideRefund } = useSupport()
-  const { closeModal, toast } = useStore()
-  const [why, setWhy] = useState('')
-  const [err, setErr] = useState('')
-  return (
-    <>
-      <p className="panel-sub" style={{ marginBottom: 10 }}>The customer will see this reason, so keep it clear and polite.</p>
-      <Field label="Reason for the customer" multiline value={why} onChange={(v) => { setWhy(v); setErr('') }} error={err} />
-      <div className="sp-row end">
-        <Btn onClick={closeModal}>Cancel</Btn>
-        <Btn variant="danger" onClick={() => { if (!why.trim()) return setErr('Add a reason before rejecting'); decideRefund(id, 'reject', 0, why.trim()); closeModal(); toast('Refund request rejected') }}>Reject request</Btn>
-      </div>
+      <PageHead title="Refund requests" desc="Customers asking for their money back. Decide each one." actions={<Btn onClick={reload}>Refresh</Btn>} />
+      <div className="tile-row"><Stat label="Waiting for a decision" value={String(status === 'needs_review' ? items.length : '—')} trend="Oldest first in the list" icon="◷" /></div>
+      <DataTable title="Refunds" rows={items} rowKey={(r) => r.id} columns={cols} loading={loading} error={failed && !data ? 'We couldn’t load the refunds.' : undefined} onRetry={reload}
+        searchLabel="Search refunds" searchText={(r) => `${r.number} ${r.order} ${r.customer} ${r.reason}`} emptyTitle="Nothing here" empty="Refund requests from customers and staff appear here."
+        tools={<select className="select" aria-label="Status" value={status} onChange={(e) => setStatus(e.target.value)}><option value="">All</option>{(Object.keys(REFUND_TEXT) as Refund['status'][]).map((s) => <option key={s} value={s}>{REFUND_TEXT[s]}</option>)}</select>}
+        actions={(r) => <Btn small onClick={() => navigate(`/support/refunds/${r.id}`)}>{r.status === 'needs_review' ? 'Review' : 'View'}</Btn>} />
     </>
   )
 }
 
 export function RefundReview({ id }: { id: string }) {
-  const { refunds, decideRefund, addRefundNote, tickets } = useSupport()
-  const { orders, customers, openModal, toast, can } = useStore()
-  const refund = refunds.find((r) => r.id === id)
-  const order0 = refund ? orders.find((o) => o.id === refund.orderId) : undefined
-  const [picked, setPicked] = useState<Set<string>>(() => new Set(refund?.itemNames ?? []))
-  const [amount, setAmount] = useState(() => String(refund?.amount ?? 0))
-  const [reason, setReason] = useState('Missing item confirmed')
-  const [error, setError] = useState('')
+  const { can, toast } = useStore()
+  const { data: r, failed, reload } = useGet<RefundFull>(`/v1/admin/refunds/${id}`)
+  const [amount, setAmount] = useState('')
+  const [reason, setReason] = useState('')
   const [note, setNote] = useState('')
-  if (!refund || !order0) return <NotFoundCard what="Refund request" back="Back to requests" onBack={() => navigate('/support/refunds')} />
-  const order = order0
+  const [err, setErr] = useState('')
+  const [busy, setBusy] = useState(false)
+  if (!r) return <PageHead title="Refund request" desc={failed ? 'We couldn’t load this request.' : 'Loading…'} actions={<Btn onClick={() => navigate('/support/refunds')}>Back to refunds</Btn>} />
   const edit = can('Claims', 'Edit')
-  const customer = customers.find((c) => c.id === refund.customerId)
-  const open = refund.status === 'Needs review'
-  const max = order.total - order.refunded
-  const toggle = (name: string, on: boolean) => {
-    const next = new Set(picked)
-    if (on) next.add(name)
-    else next.delete(name)
-    setPicked(next)
-    setAmount(String(Math.min(max, order.items.filter((i) => next.has(i.name)).reduce((n, i) => n + i.price * i.qty, 0))))
-    setError('')
+  const max = r.orderTotalCents - r.alreadyRefundedCents
+  const decide = async (decision: 'approve' | 'reject') => {
+    const cents = Math.round((amount === '' ? shillings(r.amountCents) : Number(amount)) * 100)
+    if (reason.trim().length < 3) return setErr('Give a short reason')
+    if (decision === 'approve' && (!Number.isInteger(cents) || cents < 1 || cents > max)) return setErr(`Enter an amount up to ${kes(shillings(max))}`)
+    setBusy(true)
+    try { await post(`/v1/admin/refunds/${id}/decision`, decision === 'approve' ? { decision, amountCents: cents, reason: reason.trim() } : { decision, reason: reason.trim() }); toast(decision === 'approve' ? 'Refund approved' : 'Refund rejected'); reload() } catch (e) { setErr(says(e)) } finally { setBusy(false) }
   }
-  const amt = Number(amount)
-  const approve = (n: number, label: string) => {
-    const bad = !Number.isInteger(n) || n <= 0 ? 'Enter the refund amount in whole shillings.' : n > max ? `The most that can still be refunded on this order is ${kes(max)}.` : ''
-    if (bad) return setError(bad)
-    setError('')
-    openModal({
-      title: label,
-      message: `${kes(n)} will be returned to the customer’s ${order.method === 'Card' ? 'card' : 'M-Pesa account'}${n > REFUND_LIMIT ? ` (above ${kes(REFUND_LIMIT)}, so a finance approver must be signed in)` : ''}.`,
-      confirm: 'Approve refund',
-      onConfirm: () => {
-        const e = decideRefund(refund.id, 'approve', n, reason)
-        if (e) setError(e)
-        else toast(`${kes(n)} refunded to ${refund.customerName}`)
-      },
-    })
-  }
-  const lateHours = Math.max(0, Math.round((refund.submittedAt - order.placedAt) / 3_600_000))
-  const others = refunds.filter((r) => r.orderId === order.id && r.id !== refund.id).length
-  const ticket = refund.ticketId ? tickets.find((t) => t.id === refund.ticketId) : undefined
-  const prior = refunds.filter((r) => r.customerId === refund.customerId && r.id !== refund.id && r.decision && r.decision.amount > 0)
-
+  const addNote = async () => { try { await post(`/v1/admin/refunds/${id}/notes`, { text: note.trim() }); setNote(''); reload() } catch (e) { toast(says(e)) } }
   return (
     <>
-      <PageHead title={`Refund review · ${refund.id}`} desc="Evaluate the customer’s request against the order and delivery evidence." actions={<Btn onClick={() => navigate('/support/refunds')}>Back to requests</Btn>} />
-      {!edit && <div style={{ marginBottom: 12 }}><Notice>Your role can read refund requests but not decide them.</Notice></div>}
+      <PageHead title={r.number} desc={`${r.customer} · ${r.order}`} actions={<><Btn onClick={() => navigate('/support/refunds')}>Back to refunds</Btn>{can('Orders', 'View') && <Btn onClick={() => navigate(`/orders/${r.orderId}`)}>Open the order</Btn>}</>} />
       <div className="sp-two">
+        <Panel title="Request" right={<Badge tone={refundTone(r.status)}>{REFUND_TEXT[r.status]}</Badge>}>
+          <SettingRow title="Asking for" right={<b>{kes(shillings(r.amountCents))}</b>} />
+          <SettingRow title="Order total" right={<span className="prod-name">{kes(shillings(r.orderTotalCents))}</span>} />
+          <SettingRow title="Already refunded" right={<span className="prod-name">{kes(shillings(r.alreadyRefundedCents))}</span>} />
+          <SettingRow title="Reason" sub={r.reason} />
+          <SettingRow title="Items" sub={r.items.join(', ')} />
+          <SettingRow title="Opened by" right={<span className="prod-name">{r.openedBy}</span>} />
+          {r.decision && <Notice tone={r.status === 'rejected' ? 'warning' : 'success'} mark={r.status === 'rejected' ? '!' : '✓'}>{`${r.status === 'rejected' ? 'Rejected' : `Approved ${kes(shillings(r.decision.amountCents))}`} by ${r.decision.by ?? 'staff'}: ${r.decision.reason}`}</Notice>}
+        </Panel>
         <div className="sp-stack">
-          <Panel>
-            <div className="sp-ticket-head">
-              <div><h2 className="sp-ticket-title">{refund.reason}</h2><span className="panel-sub">Request {refund.id} · Order {refund.orderId} · Submitted {when(refund.submittedAt)}</span></div>
-              <Badge tone={refundTone(refund.status)}>{refund.status}</Badge>
-            </div>
-            <div className="sp-note" style={{ marginTop: 14 }}><b>Customer note</b><br />“{refund.note}”</div>
-            {!open && refund.decision && (
-              <div style={{ marginTop: 12 }}><Notice tone={refund.status === 'Rejected' ? 'warning' : 'success'} mark={refund.status === 'Rejected' ? '×' : '✓'}>{refund.status === 'Rejected' ? `Rejected by ${refund.decision.by} · ${refund.decision.reason}` : `${kes(refund.decision.amount)} refunded by ${refund.decision.by} · ${refund.decision.reason}`}</Notice></div>
-            )}
-            <div className="panel-head" style={{ marginTop: 16 }}><h2>Order items</h2><span className="panel-sub">Select the items included in this refund</span></div>
-            {order.items.map((i) => (
-              <label key={i.productId} className={`sp-choice ${picked.has(i.name) ? 'on' : ''}`}>
-                <input type="checkbox" checked={picked.has(i.name)} disabled={!open || !edit} onChange={(e) => toggle(i.name, e.target.checked)} />
-                <span><b>{i.name}</b><span className="sp-sub">Qty {i.qty} · {kes(i.price)}</span></span>
-                <b style={{ marginLeft: 'auto' }}>{kes(i.price * i.qty)}</b>
-              </label>
-            ))}
-            <div className="sp-form2 sp-gap">
-              <div className="field" style={{ marginBottom: 0 }}>
-                <Label htmlFor="refundAmount">Refund amount (KES)</Label>
-                <input id="refundAmount" className="sp-input" inputMode="numeric" value={amount} disabled={!open || !edit} onChange={(e) => { setAmount(e.target.value); setError('') }} aria-invalid={!!error} />
-              </div>
-              <div className="field" style={{ marginBottom: 0 }}>
-                <Label htmlFor="refundReason">Decision reason</Label>
-                <select id="refundReason" className="sp-select" value={reason} disabled={!open || !edit} onChange={(e) => setReason(e.target.value)}><option>Missing item confirmed</option><option>Goodwill credit</option><option>Damage confirmed</option><option>Delivery issue confirmed</option></select>
-              </div>
-            </div>
-            {error && <div className="sp-err" role="alert">{error}</div>}
-            <div className="sp-row end sp-gap">
-              <Btn disabled={!open || !edit} onClick={() => openModal({ title: 'Reject refund request?', body: <RejectForm id={refund.id} />, noActions: true })}>Reject</Btn>
-              <Btn disabled={!open || !edit} onClick={() => approve(amt, 'Approve partial refund?')}>Approve {Number.isFinite(amt) && amt > 0 ? kes(amt) : 'amount'}</Btn>
-              <Btn variant="primary" disabled={!open || !edit || max <= 0} onClick={() => { setAmount(String(max)); approve(max, 'Approve full refund?') }}>Approve full ({kes(max)})</Btn>
-            </div>
-          </Panel>
-          <Panel title="Internal review notes" sub="Visible to staff only">
-            {refund.notes.map((n, i) => <div className="sp-note" key={i} style={{ marginBottom: 8 }}>{n}</div>)}
-            <textarea className="sp-text" aria-label="Internal review notes" placeholder="Add a note for the review trail…" value={note} onChange={(e) => setNote(e.target.value)} />
-            <div className="sp-row end sp-gap"><Btn disabled={!edit} onClick={() => { if (!note.trim()) return toast('Write the note first'); addRefundNote(refund.id, note.trim()); setNote(''); toast('Review note saved') }}>Save note</Btn></div>
-          </Panel>
-        </div>
-        <div className="sp-stack">
-          <Panel title="Customer and order" right={<Btn small onClick={() => navigate(`/orders/${order.id}`)}>Order detail</Btn>}>
-            <div className="sp-row" style={{ marginBottom: 6 }}><Person name={refund.customerName} size={44} /><div><b style={{ fontSize: 14 }}>{refund.customerName}</b><div className="panel-sub">{customer?.orders ?? '—'} orders</div></div></div>
-            <Detail label="Order total">{kes(order.total)}</Detail>
-            <Detail label="Already refunded">{kes(order.refunded)}</Detail>
-            <Detail label="Payment">{order.method} · {order.pay}</Detail>
-            <Detail label="Delivery status"><Badge>{order.status}</Badge></Detail>
-            <Detail label="Related ticket">{ticket ? <button className="sp-link" onClick={() => navigate(`/support/tickets/${ticket.id}`)}>#{ticket.id}</button> : '—'}</Detail>
-          </Panel>
-          <Panel title="Refund history">
-            <Detail label="Previous refunds">{prior.length ? `${prior.length} · ${kes(prior.reduce((n, r) => n + r.decision!.amount, 0))}` : 'None'}</Detail>
-            <Detail label="Lifetime spend">{customer ? kes(customer.spent) : '—'}</Detail>
-            <div className="sp-note" style={{ marginTop: 10 }}>
-              <b>Policy check</b><br />
-              {lateHours <= 48 ? `Request is within the 48-hour claim window (${lateHours}h after ordering).` : `Request came ${lateHours} hours after ordering, past the 48-hour window. Use judgement.`} {others ? `${others} other request${others === 1 ? '' : 's'} on this order.` : 'No duplicate claims found.'}
-              {order.pay !== 'Paid' && <> This order isn’t in a paid state.</>}
-            </div>
-            <p className="panel-sub" style={{ marginTop: 8 }}>You can approve up to {kes(REFUND_LIMIT)} yourself. Larger refunds need someone with payments access.</p>
+          {r.status === 'needs_review' && (
+            <Panel title="Decision" sub="Money is returned to the customer by Finance after you approve">
+              <Field label="Amount to refund (KES)" value={amount === '' ? String(shillings(r.amountCents)) : amount} onChange={(v) => { setAmount(v); setErr('') }} hint={`Up to ${kes(shillings(max))}. Large refunds need someone with payments access.`} />
+              <Field label="Reason" multiline value={reason} onChange={(v) => { setReason(v); setErr('') }} error={err} />
+              <div className="sp-row end"><Btn variant="danger" disabled={!edit || busy} onClick={() => void decide('reject')}>Reject</Btn><Btn variant="primary" disabled={!edit || busy} onClick={() => void decide('approve')}>Approve</Btn></div>
+            </Panel>
+          )}
+          <Panel title="Notes">
+            {r.notes.map((n, i) => <SettingRow key={i} title={n.text} sub={`${n.by} · ${ago(n.at)}`} />)}
+            <Field label="Add a note" value={note} onChange={setNote} />
+            <div className="sp-row end"><Btn disabled={!edit || !note.trim()} onClick={() => void addNote()}>Add note</Btn></div>
           </Panel>
         </div>
       </div>
@@ -197,338 +101,177 @@ export function RefundReview({ id }: { id: string }) {
   )
 }
 
-// ---- returns -----------------------------------------------------------------------------------------
+// ---- returns --------------------------------------------------------------------------------------------------------
 
-const returnTone = (s: ReturnRequest['status']) => (s === 'Approved' ? 'green' : s === 'Rejected' ? 'red' : s === 'Pending' || s === 'Evidence requested' ? 'amber' : 'blue')
+interface ReturnReq {
+  id: string; number: string; orderId: string; order: string; customer: string; item: string; itemValueCents: number; qty: number; reason: string; statement: string; photos: number; photoUrls: string[]
+  status: 'new' | 'review' | 'pending' | 'evidence_requested' | 'approved' | 'rejected'; inspection: string; note: string; submittedAt: string; decidedBy: string | null; decidedAt: string | null
+}
+const RETURN_TEXT: Record<ReturnReq['status'], string> = { new: 'New', review: 'In review', pending: 'Pending', evidence_requested: 'More info asked', approved: 'Approved', rejected: 'Rejected' }
+const returnTone = (s: ReturnReq['status']) => (s === 'approved' ? 'green' : s === 'rejected' ? 'red' : 'amber')
 
 export function ReturnsList() {
-  const { returns } = useSupport()
-  const now = useNow()
-  const [status, setStatus] = useState('All statuses')
-  const [evidence, setEvidence] = useState('All evidence')
-  const fresh = returns.filter((r) => r.status === 'New')
-  const waiting = returns.filter((r) => r.status === 'New' || r.status === 'Review')
-  const rows = returns.filter((r) => (status === 'All statuses' || r.status === status) && (evidence === 'All evidence' || (evidence === 'Photos attached' ? r.photos > 0 : r.photos === 0)))
-  const cols: Column<ReturnRequest>[] = [
-    { key: 'id', header: 'Request', sort: (a, b) => a.id.localeCompare(b.id), render: (r) => <button className="sp-link" onClick={() => navigate(`/support/returns/${r.id}`)}>{r.id}</button> },
-    { key: 'o', header: 'Order', render: (r) => r.orderId },
-    { key: 'c', header: 'Customer', sort: (a, b) => a.customerName.localeCompare(b.customerName), render: (r) => r.customerName },
-    { key: 'why', header: 'Reason', render: (r) => r.reason },
-    { key: 'at', header: 'Submitted', sort: (a, b) => a.submittedAt - b.submittedAt, render: (r) => when(r.submittedAt) },
-    { key: 'ev', header: 'Evidence', render: (r) => (r.photos ? `${r.photos} photo${r.photos === 1 ? '' : 's'}` : 'No photo') },
-    { key: 'st', header: 'Status', render: (r) => <Badge tone={returnTone(r.status)}>{r.status}</Badge> },
+  const [open, setOpen] = useState(true)
+  const { data, failed, loading, reload } = useGet<{ items: ReturnReq[] }>(`/v1/admin/returns?limit=100${open ? '&open=true' : ''}`, 30_000)
+  const cols: Column<ReturnReq>[] = [
+    { key: 'n', header: 'Request', render: (r) => <button className="sp-link" onClick={() => navigate(`/support/returns/${r.id}`)}>{r.number}</button> },
+    { key: 'o', header: 'Order', render: (r) => r.order },
+    { key: 'i', header: 'Item', render: (r) => <div><b>{r.item}</b><div className="subtext">{r.qty} unit{r.qty === 1 ? '' : 's'} · {kes(shillings(r.itemValueCents))}</div></div> },
+    { key: 'c', header: 'Customer', render: (r) => r.customer },
+    { key: 'r', header: 'Reason', render: (r) => r.reason },
+    { key: 'p', header: 'Photos', render: (r) => r.photos },
+    { key: 's', header: 'Status', render: (r) => <Badge tone={returnTone(r.status)}>{RETURN_TEXT[r.status]}</Badge> },
+    { key: 'w', header: 'Asked', render: (r) => ago(r.submittedAt) },
   ]
   return (
     <>
-      <PageHead title="Returns requests" desc="Inspect return claims, product condition and customer evidence." actions={<Btn onClick={() => downloadCsv('returns.csv', ['Request', 'Order', 'Customer', 'Reason', 'Status'], rows.map((r) => [r.id, r.orderId, r.customerName, r.reason, r.status]))}>Export</Btn>} />
-      <div className="sp-stats3">
-        <Stat label="New requests" value={String(fresh.length)} trend={`${fresh.filter((r) => r.photos).length} with photo evidence`} icon="↩" />
-        <Stat label="Awaiting inspection" value={String(waiting.length)} trend={`${waiting.filter((r) => now - r.submittedAt > 86_400_000).length} older than 24 hours`} icon="◷" up={waiting.every((r) => now - r.submittedAt <= 86_400_000)} />
-        <Stat label="Approved" value={String(returns.filter((r) => r.status === 'Approved').length)} trend="Approved in total" icon="✓" />
-      </div>
-      <DataTable
-        title={`${fresh.length} new requests`}
-        rows={rows}
-        rowKey={(r) => r.id}
-        columns={cols}
-        searchLabel="Search returns"
-        searchText={(r) => `${r.id} ${r.orderId} ${r.customerName} ${r.reason} ${r.item}`}
-        tools={
-          <>
-            <select className="sp-select auto" aria-label="Filter by status" value={status} onChange={(e) => setStatus(e.target.value)}><option>All statuses</option>{['New', 'Review', 'Pending', 'Evidence requested', 'Approved', 'Rejected'].map((s) => <option key={s}>{s}</option>)}</select>
-            <select className="sp-select auto" aria-label="Filter by evidence" value={evidence} onChange={(e) => setEvidence(e.target.value)}><option>All evidence</option><option>Photos attached</option><option>No photo</option></select>
-          </>
-        }
-        actions={(r) => <Btn small onClick={() => navigate(`/support/returns/${r.id}`)}>Inspect</Btn>}
-      />
+      <PageHead title="Return requests" desc="Customers asking to send something back." actions={<Btn onClick={reload}>Refresh</Btn>} />
+      <DataTable title={open ? 'Waiting for a decision' : 'All returns'} rows={data?.items ?? []} rowKey={(r) => r.id} columns={cols} loading={loading} error={failed && !data ? 'We couldn’t load the returns.' : undefined} onRetry={reload}
+        searchLabel="Search returns" searchText={(r) => `${r.number} ${r.order} ${r.customer} ${r.item}`} emptyTitle="No returns to review" empty="Return requests from the app appear here."
+        tools={<select className="select" aria-label="Show" value={open ? 'open' : 'all'} onChange={(e) => setOpen(e.target.value === 'open')}><option value="open">Waiting</option><option value="all">All</option></select>}
+        actions={(r) => <Btn small onClick={() => navigate(`/support/returns/${r.id}`)}>{returnTone(r.status) === 'amber' ? 'Review' : 'View'}</Btn>} />
     </>
   )
 }
 
 export function ReturnDetail({ id }: { id: string }) {
-  const { returns, decideReturn, tickets } = useSupport()
-  const { orders, riders, can, openModal, toast } = useStore()
-  const ret = returns.find((r) => r.id === id)
-  const [inspection, setInspection] = useState<'confirmed' | 'more'>(ret?.inspection ?? 'confirmed')
-  const [note, setNote] = useState(ret?.note ?? '')
-  const [shot, setShot] = useState(1)
-  const [error, setError] = useState('')
-  if (!ret) return <NotFoundCard what="Return request" back="Back to returns" onBack={() => navigate('/support/returns')} />
-  const edit = can('Claims', 'Edit')
-  const done = ret.status === 'Approved' || ret.status === 'Rejected'
-  const order = orders.find((o) => o.id === ret.orderId)
-  const rider = riders.find((r) => r.id === order?.riderId)
-  const delivered = order?.events.find((e) => e.status === 'Delivered')
-  const ticket = ret.ticketId ? tickets.find((t) => t.id === ret.ticketId) : tickets.find((t) => t.personId === ret.customerId)
-
-  const decide = (kind: 'Approved' | 'Rejected' | 'Evidence requested') => {
-    if (kind !== 'Evidence requested' && !note.trim()) return setError('Add a short reviewer note first.')
-    setError('')
-    const copy = {
-      Approved: { title: 'Approve return?', message: 'The customer will receive return instructions and a refund once the item is received.' },
-      Rejected: { title: 'Reject return?', message: 'The customer will be told the return was declined, with your note.' },
-      'Evidence requested': { title: 'Request more evidence?', message: 'The customer will be asked to upload additional photos.' },
-    }[kind]
-    openModal({ ...copy, confirm: kind === 'Evidence requested' ? 'Send request' : kind === 'Approved' ? 'Approve return' : 'Reject return', danger: kind === 'Rejected', onConfirm: () => { decideReturn(ret.id, kind, note.trim(), kind === 'Evidence requested' ? 'more' : inspection); toast(kind === 'Evidence requested' ? 'Evidence requested from the customer' : `Return ${kind.toLowerCase()}`) } })
+  const { can, toast } = useStore()
+  const { data, failed, reload } = useGet<{ items: ReturnReq[] }>('/v1/admin/returns?limit=200')
+  const r = data?.items.find((x) => x.id === id)
+  const [note, setNote] = useState('')
+  const [err, setErr] = useState('')
+  const [busy, setBusy] = useState(false)
+  if (!r) return <PageHead title="Return request" desc={failed ? 'We couldn’t load this request.' : data ? 'We couldn’t find that return.' : 'Loading…'} actions={<Btn onClick={() => navigate('/support/returns')}>Back to returns</Btn>} />
+  const decided = r.status === 'approved' || r.status === 'rejected'
+  const decide = async (decision: 'approved' | 'rejected' | 'evidence_requested') => {
+    if (note.trim().length < 3) return setErr('Write a short note for the customer')
+    setBusy(true)
+    try { await post(`/v1/admin/returns/${id}/decision`, { decision, note: note.trim() }); toast('Decision saved'); reload() } catch (e) { setErr(says(e)) } finally { setBusy(false) }
   }
-
   return (
     <>
-      <PageHead title={`Return review · ${ret.id}`} desc="Inspect photo evidence and decide how to resolve this return." actions={<Btn onClick={() => navigate('/support/returns')}>Back to returns</Btn>} />
-      {!edit && <div style={{ marginBottom: 12 }}><Notice>Your role can read return requests but not decide them.</Notice></div>}
+      <PageHead title={r.number} desc={`${r.customer} · ${r.order}`} actions={<><Btn onClick={() => navigate('/support/returns')}>Back to returns</Btn>{can('Orders', 'View') && <Btn onClick={() => navigate(`/orders/${r.orderId}`)}>Open the order</Btn>}</>} />
       <div className="sp-two">
-        <div className="sp-stack">
-          <Panel>
-            <div className="sp-ticket-head">
-              <div><h2 className="sp-ticket-title">{ret.reason}</h2><span className="panel-sub">{ret.id} · Order {ret.orderId} · Submitted {when(ret.submittedAt)}</span></div>
-              <Badge tone={returnTone(ret.status)}>{ret.status}</Badge>
-            </div>
-            <div className="panel-head" style={{ marginTop: 14 }}><h2>Photo evidence</h2><span className="panel-sub">{ret.photos ? `Customer app upload · ${shot} of ${ret.photos}` : 'No photos uploaded'}</span></div>
-            {ret.photos > 0 ? (
-              <>
-                <img className="sp-photo" src="/return-evidence.png" alt={`Customer photo ${shot} of ${ret.photos} showing the item as it arrived`} />
-                <p className="panel-sub" style={{ margin: '6px 0 10px' }}>Uploaded by {ret.customerName} · {when(ret.submittedAt)} · Original image</p>
-                <div className="sp-form2">
-                  <Btn disabled={shot <= 1} onClick={() => setShot(shot - 1)}>‹ Previous</Btn>
-                  <Btn disabled={shot >= ret.photos} onClick={() => setShot(shot + 1)}>Next ›</Btn>
-                </div>
-              </>
-            ) : <Notice tone="warning" mark="!">The customer didn’t attach a photo. You can ask for one.</Notice>}
-            <div className="sp-form2 sp-gap" role="radiogroup" aria-label="Inspection result">
-              <label className={`sp-choice ${inspection === 'confirmed' ? 'on' : ''}`}><input type="radio" name="inspection" checked={inspection === 'confirmed'} disabled={done || !edit} onChange={() => setInspection('confirmed')} /><span>Damage confirmed</span></label>
-              <label className={`sp-choice ${inspection === 'more' ? 'on' : ''}`}><input type="radio" name="inspection" checked={inspection === 'more'} disabled={done || !edit} onChange={() => setInspection('more')} /><span>More evidence needed</span></label>
-            </div>
-            <Label htmlFor="rnote">Reviewer note</Label>
-            <textarea id="rnote" className="sp-text" placeholder="Describe the inspection outcome…" value={note} disabled={done || !edit} onChange={(e) => { setNote(e.target.value); setError('') }} />
-            {error && <div className="sp-err" role="alert">{error}</div>}
-            <div className="sp-row end sp-gap">
-              <Btn disabled={done || !edit} onClick={() => decide('Evidence requested')}>Request evidence</Btn>
-              <Btn disabled={done || !edit} onClick={() => decide('Rejected')}>Reject</Btn>
-              <Btn variant="primary" disabled={done || !edit} onClick={() => decide('Approved')}>Approve return</Btn>
+        <Panel title="What the customer says" right={<Badge tone={returnTone(r.status)}>{RETURN_TEXT[r.status]}</Badge>}>
+          <SettingRow title="Item" sub={`${r.qty} unit${r.qty === 1 ? '' : 's'}`} right={<b>{r.item}</b>} />
+          <SettingRow title="Value" right={<span className="prod-name">{kes(shillings(r.itemValueCents))}</span>} />
+          <SettingRow title="Reason" right={<span className="prod-name">{r.reason}</span>} />
+          {r.statement && <SettingRow title="In their words" sub={r.statement} />}
+          <SettingRow title="Photos" right={r.photoUrls.length ? <span className="sp-row">{r.photoUrls.map((u, i) => <Btn small key={u} onClick={() => void openFile(u).catch((e) => toast(says(e)))}>{`Photo ${i + 1}`}</Btn>)}</span> : <span className="prod-name">{r.photos ? `${r.photos} (not stored)` : 'None'}</span>} />
+          {r.note && <Notice mark="i">{`${decided ? 'Decision note' : 'Last note to the customer'}: ${r.note}`}</Notice>}
+        </Panel>
+        {!decided && (
+          <Panel title="Decision" sub="The customer sees your note in the app. Approving sends the item to the warehouse inspection queue.">
+            <Field label="Note to the customer" multiline value={note} onChange={(v) => { setNote(v); setErr('') }} error={err} />
+            <div className="sp-row end">
+              <Btn disabled={!can('Claims', 'Edit') || busy} onClick={() => void decide('evidence_requested')}>Ask for more info</Btn>
+              <Btn variant="danger" disabled={!can('Claims', 'Edit') || busy} onClick={() => void decide('rejected')}>Reject</Btn>
+              <Btn variant="primary" disabled={!can('Claims', 'Edit') || busy} onClick={() => void decide('approved')}>Approve</Btn>
             </div>
           </Panel>
-          <Panel title="Customer conversation">
-            <div className="sp-note" style={{ marginTop: 8 }}>“{ret.statement}”</div>
-            {ticket && <div style={{ marginTop: 12 }}><Btn small onClick={() => navigate(`/support/tickets/${ticket.id}`)}>Open related ticket</Btn></div>}
-          </Panel>
-        </div>
-        <div className="sp-stack">
-          <Panel title="Request summary" right={<Badge tone={returnTone(ret.status)}>{ret.status}</Badge>}>
-            <Detail label="Customer">{ret.customerName}</Detail>
-            <Detail label="Item">{ret.item} · Qty {ret.qty}</Detail>
-            <Detail label="Item value">{kes(ret.itemValue)}</Detail>
-            <Detail label="Delivered">{delivered ? when(delivered.at) : '—'}</Detail>
-            <Detail label="Rider">{rider?.name ?? '—'}</Detail>
-          </Panel>
-          <Panel title="Order delivery">
-            <div className="sp-tl">
-              {[...(order?.events ?? [])].filter((e) => e.status !== 'Note').reverse().slice(0, 4).map((e, i) => <TimelineItem key={i} title={e.status === 'Delivered' ? 'Delivered to customer' : e.status} sub={`${when(e.at)} · ${e.by}`} />)}
-            </div>
-          </Panel>
-        </div>
+        )}
       </div>
     </>
   )
 }
 
-// ---- disputes -----------------------------------------------------------------------------------------
+// ---- disputes -------------------------------------------------------------------------------------------------------
 
-function ResolveForm({ d, inFavourOf, note }: { d: Dispute; inFavourOf: 'customer' | 'rider'; note: string }) {
-  const { resolveDispute } = useSupport()
-  const { orders, closeModal, toast } = useStore()
-  const o = orders.find((x) => x.id === d.orderId)
-  const canRefund = inFavourOf === 'customer' && o?.pay === 'Paid' && o.total - o.refunded > 0
-  const [refund, setRefund] = useState(!!canRefund)
-  return (
-    <>
-      <p className="panel-sub" style={{ marginBottom: 12 }}>{inFavourOf === 'customer' ? 'The dispute will be resolved in the customer’s favour and the outcome recorded.' : 'The dispute will be resolved in the rider’s favour and the outcome recorded.'}</p>
-      {canRefund && (
-        <label className="sp-choice" style={{ marginBottom: 14 }}>
-          <input type="checkbox" checked={refund} onChange={(e) => setRefund(e.target.checked)} />
-          <span><b>Open a refund request for {kes(o!.total - o!.refunded)}</b><span className="sp-sub">It goes to the refund queue for review.</span></span>
-        </label>
-      )}
-      <div className="sp-row end">
-        <Btn onClick={closeModal}>Cancel</Btn>
-        <Btn variant="primary" onClick={() => { resolveDispute(d.id, inFavourOf, note, refund); closeModal(); toast(`Dispute ${d.id} resolved for the ${inFavourOf}`) }}>Resolve for {inFavourOf}</Btn>
-      </div>
-    </>
-  )
+interface Dispute {
+  id: string; number: string; orderId: string; order: string; customer: string; rider: string | null; claimBy: string; category: string; priority: string
+  status: 'awaiting_decision' | 'escalated' | 'resolved_customer' | 'resolved_rider'; customerStatement: string; riderStatement: string; evidence: string[] | string; notes: string; assignee: string | null
+  openedAt: string; late: boolean; outcome: { by: string | null; at: string; note: string } | null
 }
+const DISPUTE_TEXT: Record<Dispute['status'], string> = { awaiting_decision: 'Needs a decision', escalated: 'Escalated', resolved_customer: 'Resolved for the customer', resolved_rider: 'Resolved for the rider' }
 
 export function Disputes({ id }: { id?: string }) {
-  const { disputes, setDisputeNotes, escalateDispute } = useSupport()
-  const { openModal, toast, can } = useStore()
-  const now = useNow()
-  const open = disputes.filter((d) => d.status === 'Awaiting decision' || d.status === 'Escalated')
-  const sorted = [...disputes].sort((a, b) => (open.includes(b) ? 1 : 0) - (open.includes(a) ? 1 : 0) || order[a.priority] - order[b.priority])
-  const d = disputes.find((x) => x.id === id) ?? sorted[0]
-  const [noteErr, setNoteErr] = useState('')
-  if (!d) return (<><PageHead title="Disputes" desc="Review delivery disputes with customer and rider evidence side by side." /><Notice mark="✓" tone="success">No disputes at the moment.</Notice></>)
-  const edit = can('Claims', 'Edit')
-  const closed = d.status.startsWith('Resolved')
-  const left = d.slaDueAt - now
-  const tickets = open.length
-  const resolve = (who: 'customer' | 'rider') => {
-    if (!d.notes.trim()) return setNoteErr('Record your finding before resolving.')
-    setNoteErr('')
-    openModal({ title: `Resolve for ${who}?`, body: <ResolveForm d={d} inFavourOf={who} note={d.notes.trim()} />, noActions: true })
+  const { can, toast } = useStore()
+  const [open, setOpen] = useState(true)
+  const list = useGet<{ items: Dispute[] }>(`/v1/admin/disputes?limit=100${open ? '&open=true' : ''}`, 30_000)
+  const [note, setNote] = useState('')
+  const [refund, setRefund] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const d = id ? list.data?.items.find((x) => x.id === id) : undefined
+  const cols: Column<Dispute>[] = [
+    { key: 'n', header: 'Dispute', render: (x) => <button className="sp-link" onClick={() => navigate(`/support/disputes/${x.id}`)}>{x.number}</button> },
+    { key: 'o', header: 'Order', render: (x) => x.order },
+    { key: 'c', header: 'Customer', render: (x) => x.customer },
+    { key: 'r', header: 'Rider', render: (x) => x.rider ?? '—' },
+    { key: 'cat', header: 'About', render: (x) => x.category },
+    { key: 's', header: 'Status', render: (x) => <Badge tone={x.status.startsWith('resolved') ? 'green' : x.late ? 'red' : 'amber'}>{DISPUTE_TEXT[x.status]}</Badge> },
+    { key: 'w', header: 'Opened', render: (x) => ago(x.openedAt) },
+  ]
+  const act = async (what: () => Promise<unknown>, done: string) => { setBusy(true); try { await what(); toast(done); setNote(''); list.reload() } catch (e) { toast(says(e)) } finally { setBusy(false) } }
+  if (id) {
+    if (!d) return <PageHead title="Dispute" desc={list.failed ? 'We couldn’t load this dispute.' : list.data ? 'We couldn’t find that dispute (it may be resolved).' : 'Loading…'} actions={<Btn onClick={() => navigate('/support/disputes')}>Back to disputes</Btn>} />
+    const edit = can('Claims', 'Edit')
+    const resolved = d.status.startsWith('resolved')
+    return (
+      <>
+        <PageHead title={d.number} desc={`${d.customer} · ${d.order}${d.rider ? ` · rider ${d.rider}` : ''}`} actions={<><Btn onClick={() => navigate('/support/disputes')}>Back to disputes</Btn>{can('Orders', 'View') && <Btn onClick={() => navigate(`/orders/${d.orderId}`)}>Open the order</Btn>}</>} />
+        <div className="sp-two">
+          <Panel title="The two sides" right={<Badge tone={resolved ? 'green' : d.late ? 'red' : 'amber'}>{DISPUTE_TEXT[d.status]}</Badge>}>
+            <SettingRow title="Raised by" right={<span className="prod-name">{d.claimBy}</span>} />
+            <SettingRow title="Customer says" sub={d.customerStatement || 'Nothing written yet'} />
+            <SettingRow title="Rider says" sub={d.riderStatement || 'Nothing written yet'} />
+            {d.notes && <SettingRow title="Staff notes" sub={d.notes} />}
+            {d.outcome && <Notice mark="✓">{`${d.outcome.by ?? 'Staff'}: ${d.outcome.note}`}</Notice>}
+          </Panel>
+          {!resolved && (
+            <Panel title="Decide">
+              <Field label="Your note" multiline value={note} onChange={setNote} />
+              <label className="sp-row" style={{ gap: 6, marginBottom: 8 }}><input type="checkbox" checked={refund} onChange={(e) => setRefund(e.target.checked)} /> Also open a refund request when the customer wins</label>
+              <div className="sp-row end">
+                {d.status === 'awaiting_decision' && <Btn disabled={!edit || busy} onClick={() => void act(() => post(`/v1/admin/disputes/${d.id}/escalate`), 'Escalated')}>Escalate</Btn>}
+                <Btn disabled={!edit || busy || note.trim().length < 3} onClick={() => void act(() => post(`/v1/admin/disputes/${d.id}/resolve`, { inFavourOf: 'rider', note: note.trim() }), 'Resolved for the rider')}>Rider is right</Btn>
+                <Btn variant="primary" disabled={!edit || busy || note.trim().length < 3} onClick={() => void act(() => post(`/v1/admin/disputes/${d.id}/resolve`, { inFavourOf: 'customer', note: note.trim(), openRefund: refund }), 'Resolved for the customer')}>Customer is right</Btn>
+              </div>
+            </Panel>
+          )}
+        </div>
+      </>
+    )
   }
   return (
     <>
-      <PageHead title="Disputes" desc="Review delivery disputes with customer and rider evidence side by side." actions={<Btn onClick={() => downloadCsv('disputes.csv', ['Dispute', 'Order', 'Category', 'Priority', 'Status'], disputes.map((x) => [x.id, x.orderId, x.category, x.priority, x.status]))}>Export</Btn>} />
-      <div className="sp-stats3">
-        <Stat label="Open disputes" value={String(tickets)} trend={`${open.filter((x) => x.priority === 'Urgent' || x.priority === 'High').length} need a decision today`} icon="⚖" up={tickets === 0} />
-        <Stat label="Customer claims" value={String(open.filter((x) => x.claimBy === 'Customer').length)} trend="Delivery or missing-item issues" icon="C" />
-        <Stat label="Rider claims" value={String(open.filter((x) => x.claimBy === 'Rider').length)} trend="Route, proof or payout issues" icon="R" />
-      </div>
-      <div className="sp-two">
-        <div className="sp-stack">
-          <Panel
-            title={`Dispute ${d.id}`}
-            sub={`Order ${d.orderId} · ${d.category}`}
-            right={<Badge tone={closed ? 'green' : 'amber'}>{d.status}</Badge>}
-          >
-            <div className="sp-claims">
-              <div className="sp-claim">
-                <div className="sp-row"><Person name={d.customerName} /><div><b style={{ fontSize: 11 }}>Customer statement</b><span className="sp-sub">{d.customerName}</span></div></div>
-                <p>“{d.customerStatement}”</p>
-                <Badge tone="red">{d.customerTag}</Badge>
-              </div>
-              <div className="sp-claim">
-                <div className="sp-row"><Person name={d.riderName} /><div><b style={{ fontSize: 11 }}>Rider statement</b><span className="sp-sub">{d.riderName}</span></div></div>
-                <p>“{d.riderStatement}”</p>
-                <Badge tone="green">{d.riderTag}</Badge>
-              </div>
-            </div>
-            <div className="panel-head" style={{ marginTop: 16 }}><h2>Evidence timeline</h2><Btn small onClick={() => navigate(`/orders/${d.orderId}`)}>View order</Btn></div>
-            <div className="sp-tl">{d.evidence.map((e, i) => <TimelineItem key={i} tone={e.tone === 'blue' ? undefined : e.tone} title={e.text} sub={e.sub} />)}</div>
-          </Panel>
-          <Panel title="Decision notes">
-            {closed && d.outcome && <div style={{ marginBottom: 10 }}><Notice tone="success" mark="✓">{d.status} by {d.outcome.by} · {when(d.outcome.at)}</Notice></div>}
-            <textarea className="sp-text" aria-label="Decision notes" placeholder="Record your finding and the supporting evidence…" value={d.notes} disabled={closed || !edit} onChange={(e) => { setDisputeNotes(d.id, e.target.value); setNoteErr('') }} />
-            {noteErr && <div className="sp-err" role="alert">{noteErr}</div>}
-            <div className="sp-row end sp-gap">
-              <Btn disabled={closed || !edit || d.status === 'Escalated'} onClick={() => openModal({ title: 'Send for more review?', message: 'The dispute will be escalated to the delivery operations lead.', confirm: 'Escalate', onConfirm: () => { escalateDispute(d.id); toast(`${d.id} escalated`) } })}>{d.status === 'Escalated' ? 'Escalated' : 'Escalate'}</Btn>
-              <Btn disabled={closed || !edit} onClick={() => resolve('customer')}>Resolve for customer</Btn>
-              <Btn variant="primary" disabled={closed || !edit} onClick={() => resolve('rider')}>Resolve for rider</Btn>
-            </div>
-          </Panel>
-        </div>
-        <div className="sp-stack">
-          <Panel title="Dispute queue">
-            {sorted.map((x) => (
-              <div className={`sp-detail ${x.id === d.id ? 'sp-active' : ''}`} key={x.id}>
-                <button className="sp-link" style={{ flex: 1 }} onClick={() => navigate(`/support/disputes/${x.id}`)} aria-current={x.id === d.id ? 'true' : undefined}>{x.id}<span className="sp-sub">{x.orderId} · {x.customerName}</span></button>
-                {x.status.startsWith('Resolved') ? <Badge tone="green">Resolved</Badge> : <PriorityTag p={x.priority} />}
-              </div>
-            ))}
-          </Panel>
-          <Panel title="Case details">
-            <Detail label="Assigned to">{d.assignee}</Detail>
-            <Detail label="Category">{d.category}</Detail>
-            <Detail label="Opened">{ago(d.openedAt, now)}</Detail>
-            <Detail label="Response SLA">{closed ? '—' : left > 0 ? <span style={{ color: left < 20 * 60_000 ? 'var(--red)' : undefined }}>{Math.round(left / 60_000)} min remaining</span> : <span style={{ color: 'var(--red)' }}>Overdue by {Math.round(-left / 60_000)} min</span>}</Detail>
-            <Detail label="Related ticket">{d.ticketId ? <button className="sp-link" onClick={() => navigate(`/support/tickets/${d.ticketId}`)}>#{d.ticketId}</button> : '—'}</Detail>
-          </Panel>
-        </div>
-      </div>
+      <PageHead title="Delivery disputes" desc="When a customer and a rider disagree about a delivery." actions={<Btn onClick={list.reload}>Refresh</Btn>} />
+      <DataTable title={open ? 'Open disputes' : 'All disputes'} rows={list.data?.items ?? []} rowKey={(x) => x.id} columns={cols} loading={list.loading} error={list.failed && !list.data ? 'We couldn’t load the disputes.' : undefined} onRetry={list.reload}
+        searchLabel="Search disputes" searchText={(x) => `${x.number} ${x.order} ${x.customer} ${x.rider ?? ''}`} emptyTitle="No disputes" empty="Support staff open a dispute from a ticket about a delivery."
+        tools={<select className="select" aria-label="Show" value={open ? 'open' : 'all'} onChange={(e) => setOpen(e.target.value === 'open')}><option value="open">Open</option><option value="all">All</option></select>}
+        actions={(x) => <Btn small onClick={() => navigate(`/support/disputes/${x.id}`)}>Open</Btn>} />
     </>
   )
 }
 
-// ---- customer lookup ---------------------------------------------------------------------------------------
+// ---- customer lookup ------------------------------------------------------------------------------------------------
+
+interface Found { id: string; name: string; email: string; phone: string; area: string; orders: number; spentCents: number }
 
 export function CustomerLookup() {
-  const { customers, orders, openModal, toast, can, updateCustomer } = useStore()
-  const { tickets, refunds, startChat } = useSupport()
-  const wanted = useQuery().get('customer')
-  const [term, setTerm] = useState('')
-  const [submitted, setSubmitted] = useState('')
-  const [note, setNote] = useState('')
-  const [picked, setPicked] = useState<string | null>(null)
-  const needle = submitted.trim().toLowerCase()
-  const matches = needle
-    ? customers.filter((c) => `${c.name} ${c.phone} ${c.email} ${c.id}`.toLowerCase().includes(needle) || orders.some((o) => o.customerId === c.id && o.id.toLowerCase() === needle))
-    : []
-  const c = customers.find((x) => x.id === (picked ?? (needle ? matches[0]?.id : wanted)))
-  const edit = can('Claims', 'Edit')
-  const mine = c ? orders.filter((o) => o.customerId === c.id).sort((a, b) => b.placedAt - a.placedAt) : []
-  const myTickets = c ? tickets.filter((t) => t.personId === c.id) : []
-  const myRefunds = c ? refunds.filter((r) => r.customerId === c.id) : []
-  const rated = myTickets.filter((t) => t.csat)
-  const search = () => { setSubmitted(term); setPicked(null) }
-
+  const { can, toast } = useStore()
+  const [q, setQ] = useState('')
+  const [found, setFound] = useState<Found[]>([])
+  const [searched, setSearched] = useState(false)
+  useEffect(() => {
+    if (q.trim().length < 2) return
+    let live = true
+    const t = setTimeout(() => { void get<{ items: Found[] }>(`/v1/admin/customers?limit=10&q=${encodeURIComponent(q.trim())}`).then((r) => { if (live) { setFound(r.items); setSearched(true) } }, () => undefined) }, 300)
+    return () => { live = false; clearTimeout(t) }
+  }, [q])
+  const startChat = async (c: Found) => { try { await post('/v1/admin/chats', { customerId: c.id }); navigate('/support/chat') } catch (e) { toast(says(e)) } }
   return (
     <>
-      <PageHead title="Customer lookup" desc="Find a customer and review their orders, support history and satisfaction." />
-      <section className="card panel" style={{ marginBottom: 14 }}>
-        <div className="panel-head"><div><h2>Find a customer</h2><div className="panel-sub">Search by name, phone, email or order number.</div></div></div>
-        <form className="sp-row" style={{ maxWidth: 720 }} onSubmit={(e) => { e.preventDefault(); search() }} role="search">
-          <input className="sp-input" style={{ flex: 1, height: 38 }} aria-label="Find customer" placeholder="For example Nia, 0712 or SC-4928" value={term} onChange={(e) => setTerm(e.target.value)} />
-          <Btn variant="primary" type="submit">Search</Btn>
-        </form>
-        {needle && matches.length > 1 && (
-          <div className="sp-row" style={{ marginTop: 10 }}>
-            <span className="panel-sub">{matches.length} matches:</span>
-            {matches.slice(0, 8).map((m) => <button key={m.id} className={`btn small ${m.id === c?.id ? 'primary' : ''}`} onClick={() => setPicked(m.id)}>{m.name}</button>)}
+      <PageHead title="Customer lookup" desc="Find a customer by name, phone or email before you help them." />
+      <Panel title="Search">
+        <Field label="Name, phone or email" value={q} onChange={(v) => { setQ(v); if (v.trim().length < 2) { setFound([]); setSearched(false) } }} />
+        {searched && found.length === 0 && q.trim().length >= 2 && <div className="panel-sub">No customer matches “{q.trim()}”.</div>}
+        {q.trim().length >= 2 && found.map((c) => (
+          <div className="list-row" key={c.id}>
+            <span><strong>{c.name || c.email || c.phone}</strong><small>{[c.phone, c.email, c.area].filter(Boolean).join(' · ')} · {c.orders} order{c.orders === 1 ? '' : 's'} · {kes(shillings(c.spentCents))}</small></span>
+            <span className="sp-row"><Btn small onClick={() => navigate(`/orders?customer=${c.id}`)}>Orders</Btn>{can('Customers', 'View') && <Btn small onClick={() => navigate(`/customers/${c.id}`)}>Profile</Btn>}<Btn small variant="primary" disabled={!can('Support', 'Create')} onClick={() => void startChat(c)}>Start a chat</Btn></span>
           </div>
-        )}
-        {needle && !matches.length && <div style={{ marginTop: 10 }}><Notice tone="warning" mark="!">No customer matches “{submitted}”. Check the spelling or try a phone number.</Notice></div>}
-      </section>
-      {!c && !(needle && !matches.length) && <Notice>Search for a customer above, or open one from a ticket or chat.</Notice>}
-      {c && (
-        <div className="sp-two">
-          <div className="sp-stack">
-            <Panel title="Customer profile" right={<Badge tone="green">Active</Badge>}>
-              <div className="sp-row" style={{ marginBottom: 14 }}>
-                <Person name={c.name} size={48} />
-                <div><b style={{ fontSize: 15 }}>{c.name}</b><div className="panel-sub">Customer ID {c.id.toUpperCase()} · Joined {c.added}</div></div>
-                <Btn small onClick={() => { void navigator.clipboard?.writeText(c.id.toUpperCase()).catch(() => undefined); toast('Customer ID copied') }}>Copy ID</Btn>
-              </div>
-              <div className="sp-stats3" style={{ maxWidth: 'none' }}>
-                <Stat label="Lifetime orders" value={String(c.orders)} trend={`${mine.length} on record here`} icon="▧" />
-                <Stat label="Lifetime spend" value={kes(c.spent)} trend={`Average ${kes(c.spent / Math.max(1, c.orders))}`} icon="K" />
-                <Stat label="Satisfaction" value={rated.length ? `${(rated.reduce((n, t) => n + t.csat!, 0) / rated.length).toFixed(1)} / 5` : '—'} trend={`${rated.length} rated tickets`} icon="☆" />
-              </div>
-              <div className="panel-head"><h2>Recent orders</h2><Btn small onClick={() => navigate(`/orders?customer=${c.id}`)}>All orders</Btn></div>
-              <div className="table-wrap">
-                <table>
-                  <thead><tr><th>Order</th><th>Date</th><th>Total</th><th>Status</th></tr></thead>
-                  <tbody>
-                    {mine.slice(0, 4).map((o) => <tr key={o.id}><td><button className="sp-link" onClick={() => navigate(`/orders/${o.id}`)}>{o.id}</button></td><td>{when(o.placedAt)}</td><td>{kes(o.total)}</td><td><Badge>{o.status}</Badge></td></tr>)}
-                    {!mine.length && <tr><td colSpan={4} style={{ textAlign: 'center', color: 'var(--muted)', padding: 20 }}>No recent orders.</td></tr>}
-                  </tbody>
-                </table>
-              </div>
-            </Panel>
-            <Panel title="Support history">
-              {myTickets.slice(0, 4).map((t) => (
-                <div className="sp-detail" key={t.id}><span style={{ color: 'var(--ink)' }}><button className="sp-link" onClick={() => navigate(`/support/tickets/${t.id}`)}>#{t.id} · {t.subject}</button><span className="sp-sub">{when(t.createdAt)}</span></span><Badge tone={t.status === 'Resolved' ? 'green' : t.status === 'Open' ? 'red' : 'amber'}>{t.status}</Badge></div>
-              ))}
-              {myRefunds.map((r) => (
-                <div className="sp-detail" key={r.id}><span style={{ color: 'var(--ink)' }}><button className="sp-link" onClick={() => navigate(`/support/refunds/${r.id}`)}>Refund {r.id} · {r.reason}</button><span className="sp-sub">{when(r.submittedAt)} · {kes(r.amount)}</span></span><Badge tone={refundTone(r.status)}>{r.status}</Badge></div>
-              ))}
-              {!myTickets.length && !myRefunds.length && <p className="panel-sub">No tickets or refunds yet.</p>}
-            </Panel>
-          </div>
-          <div className="sp-stack">
-            <Panel title="Customer contact">
-              <Detail label="Phone">{c.phone}</Detail>
-              <Detail label="Email">{c.email}</Detail>
-              <Detail label="Default area">{c.area}, Nairobi</Detail>
-              <Detail label="Wallet">{kes(c.wallet)}</Detail>
-              <div style={{ marginTop: 10 }}><Btn disabled={!edit} onClick={() => { const id = startChat(c.id); navigate(`/support/chat?chat=${id}`) }}>Start live chat</Btn></div>
-            </Panel>
-            <Panel title="Internal customer note">
-              {c.notes.slice(0, 3).map((n, i) => <p className="panel-sub" key={i} style={{ marginBottom: 6 }}>{n.text} <i>— {n.by}, {n.at}</i></p>)}
-              <textarea className="sp-text" aria-label="Internal customer note" placeholder="Add a staff-only note…" value={note} disabled={!edit} onChange={(e) => setNote(e.target.value)} />
-              <div className="sp-row end sp-gap"><Btn small disabled={!edit} onClick={() => { if (!note.trim()) return toast('Write the note first'); updateCustomer(c.id, { notes: [{ by: 'You', text: note.trim(), at: 'Today' }, ...c.notes] }); setNote(''); toast('Customer note saved') }}>Save note</Btn></div>
-              <Btn small onClick={() => openModal({ title: `Open a ticket for ${c.name}`, message: 'Create it from the Tickets inbox so it gets a category and priority.', confirm: 'Go to inbox', onConfirm: () => navigate('/support/tickets') })}>Create ticket</Btn>
-            </Panel>
-          </div>
-        </div>
-      )}
+        ))}
+      </Panel>
     </>
   )
 }

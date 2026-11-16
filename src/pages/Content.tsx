@@ -1,260 +1,166 @@
-import { useRef, useState } from 'react'
+import { useState } from 'react'
 
-import { ago, Detail, Person, useNow, when } from '../components/support-ui'
-import { Badge, Btn, downloadCsv, Field, PageHead, Panel, Stat } from '../components/ui'
-import { ARTICLE_CATEGORIES, CANNED_CATEGORIES, isComplaint, TOKENS, type Article, type Canned, type Review } from '../data/support'
-import { navigate } from '../lib/router'
+import { Badge, Btn, DataTable, Field, Notice, PageHead, Panel, SettingRow, Stat, type Column } from '../components/ui'
+import { ApiError, patch, post } from '../lib/api'
+import { dateTime } from '../lib/format'
 import { useStore } from '../lib/store'
-import { useSupport } from '../lib/support'
+import { useGet } from '../lib/use-get'
 
-// ---- reviews and complaints ---------------------------------------------------------------------------------
+const says = (e: unknown) => (e instanceof ApiError ? e.message : 'Something went wrong. Try again.')
 
-function ReplyForm({ review }: { review: Review }) {
-  const { replyReview } = useSupport()
+// ---- reviews --------------------------------------------------------------------------------------------------------
+
+interface Review { id: string; customer: string; rating: number; text: string; topic: string; state: 'visible' | 'flagged' | 'hidden'; reply: string | null; repliedBy: string | null; checked: boolean; order: string | null; at: string; complaint: boolean }
+const stars = (n: number) => '★'.repeat(n) + '☆'.repeat(5 - n)
+
+function ReplyForm({ r, onDone }: { r: Review; onDone: () => void }) {
   const { closeModal, toast } = useStore()
-  const [text, setText] = useState(review.reply ?? '')
+  const [text, setText] = useState(r.reply ?? '')
   const [err, setErr] = useState('')
+  const go = async () => {
+    if (!text.trim()) return setErr('Write a reply')
+    try { await post(`/v1/admin/reviews/${r.id}/reply`, { text: text.trim() }); onDone(); closeModal(); toast('Reply published') } catch (e) { setErr(says(e)) }
+  }
   return (
     <>
-      <div className="sp-note" style={{ marginBottom: 12 }}><b>{review.customerName} · {review.rating}/5</b><br />“{review.text}”</div>
-      <Field label="Your public reply" multiline value={text} onChange={(v) => { setText(v); setErr('') }} placeholder="Be kind and specific. Never share personal details." error={err} />
-      <div className="sp-row end">
-        <Btn onClick={closeModal}>Cancel</Btn>
-        <Btn variant="primary" onClick={() => { if (!text.trim()) return setErr('Write a reply first'); replyReview(review.id, text.trim()); closeModal(); toast('Reply posted') }}>Post reply</Btn>
-      </div>
+      <Notice mark="i">{`${r.customer}: “${r.text || 'No comment'}”`}</Notice>
+      <Field label="Your public reply" multiline value={text} onChange={(v) => { setText(v); setErr('') }} error={err} />
+      <div className="actions" style={{ justifyContent: 'flex-end' }}><Btn onClick={closeModal}>Cancel</Btn><Btn variant="primary" onClick={() => void go()}>Publish reply</Btn></div>
     </>
   )
 }
 
 export function Reviews() {
-  const { reviews, setReviewState } = useSupport()
-  const { openModal, toast, can } = useStore()
-  const now = useNow()
-  const [tab, setTab] = useState<'All' | 'Complaints' | 'Reviews'>('All')
-  const [sort, setSort] = useState<'new' | 'low'>('new')
+  const { can, openModal, toast } = useStore()
+  const [state, setState] = useState('')
+  const [complaints, setComplaints] = useState(false)
+  const { data, failed, loading, reload } = useGet<{ items: Review[]; summary: { count: number; average: number | null; complaints: number } }>(`/v1/admin/reviews?limit=100${state ? `&state=${state}` : ''}${complaints ? '&complaints=true' : ''}`, 60_000)
   const edit = can('Support', 'Edit')
-  const complaints = reviews.filter(isComplaint)
-  const list = reviews.filter((r) => (tab === 'All' ? true : tab === 'Complaints' ? isComplaint(r) : !isComplaint(r))).sort((a, b) => (sort === 'new' ? b.at - a.at : a.rating - b.rating || b.at - a.at))
-  const unanswered = complaints.filter((r) => !r.reply && r.state !== 'Hidden')
-  const avg = reviews.length ? reviews.reduce((n, r) => n + r.rating, 0) / reviews.length : 0
-  const waiting = reviews.filter((r) => !r.checked)
-
+  const mark = async (r: Review, s: Review['state']) => { try { await post(`/v1/admin/reviews/${r.id}/state`, { state: s }); toast(s === 'hidden' ? 'Review hidden' : s === 'flagged' ? 'Review flagged' : 'Review is visible'); reload() } catch (e) { toast(says(e)) } }
+  const cols: Column<Review>[] = [
+    { key: 'r', header: 'Rating', sort: (a, b) => a.rating - b.rating, render: (r) => <span style={{ color: r.complaint ? 'var(--red)' : undefined }}>{stars(r.rating)}</span> },
+    { key: 'c', header: 'Customer', render: (r) => <div><b>{r.customer}</b><div className="subtext">{r.order ?? ''}{r.topic ? ` · ${r.topic}` : ''}</div></div> },
+    { key: 't', header: 'Review', render: (r) => <div style={{ maxWidth: 320 }}>{r.text || <span className="subtext">No comment</span>}{r.reply && <div className="subtext">{`Reply: ${r.reply}`}</div>}</div> },
+    { key: 's', header: 'State', render: (r) => <Badge tone={r.state === 'visible' ? 'green' : r.state === 'flagged' ? 'amber' : 'gray'}>{r.state}</Badge> },
+    { key: 'a', header: 'Date', sort: (a, b) => Date.parse(a.at) - Date.parse(b.at), render: (r) => dateTime(Date.parse(r.at)) },
+  ]
   return (
     <>
-      <PageHead title="Reviews and complaints moderation" desc="Review public feedback, route complaints and keep customer conversations respectful." actions={<Btn onClick={() => { downloadCsv('reviews.csv', ['Customer', 'Rating', 'Topic', 'State', 'Review', 'Reply'], reviews.map((r) => [r.customerName, r.rating, r.topic, r.state, r.text, r.reply ?? ''])); toast('Moderation report exported') }}>Export report</Btn>} />
-      <div className="sp-stats3">
-        <Stat label="Awaiting moderation" value={String(waiting.length)} trend={`${waiting.filter(isComplaint).length} flagged as complaints`} icon="☆" up={waiting.length === 0} />
-        <Stat label="Average rating" value={`${avg.toFixed(1)} / 5`} trend={`Across ${reviews.length} reviews`} icon="★" />
-        <Stat label="Unanswered complaints" value={String(unanswered.length)} trend={`${unanswered.filter((r) => now - r.at > 86_400_000).length} older than 24 hours`} icon="!" up={unanswered.length === 0} />
+      <PageHead title="Reviews" desc="What shoppers say about their orders. Reply publicly, or hide anything that breaks your rules." actions={<Btn onClick={reload}>Refresh</Btn>} />
+      <div className="tile-row">
+        <Stat label="Reviews" value={String(data?.summary.count ?? '—')} trend="Not counting hidden" icon="★" />
+        <Stat label="Average" value={data?.summary.average == null ? '—' : data.summary.average.toFixed(2)} trend="Out of 5" icon="◈" />
+        <Stat label="Complaints" value={String(data?.summary.complaints ?? '—')} trend="1 or 2 stars" icon="!" up={(data?.summary.complaints ?? 0) === 0} />
       </div>
-      <div className="sp-two">
-        <Panel>
-          <div className="sp-row" style={{ marginBottom: 12 }}>
-            {(['All', 'Complaints', 'Reviews'] as const).map((t) => <button key={t} className={`btn small ${tab === t ? 'primary' : ''}`} onClick={() => setTab(t)} aria-pressed={tab === t}>{t} {t === 'All' ? reviews.length : t === 'Complaints' ? complaints.length : reviews.length - complaints.length}</button>)}
-            <select className="sp-select auto" style={{ marginLeft: 'auto' }} aria-label="Sort reviews" value={sort} onChange={(e) => setSort(e.target.value as 'new' | 'low')}><option value="new">Newest first</option><option value="low">Lowest rating</option></select>
+      <DataTable title="Reviews" rows={data?.items ?? []} rowKey={(r) => r.id} columns={cols} loading={loading} error={failed && !data ? 'We couldn’t load the reviews.' : undefined} onRetry={reload}
+        searchLabel="Search reviews" searchText={(r) => `${r.customer} ${r.text} ${r.order ?? ''}`} emptyTitle="No reviews" empty="Reviews appear when shoppers rate a delivered order."
+        tools={<>
+          <select className="select" aria-label="State" value={state} onChange={(e) => setState(e.target.value)}><option value="">All states</option><option value="visible">Visible</option><option value="flagged">Flagged</option><option value="hidden">Hidden</option></select>
+          <select className="select" aria-label="Kind" value={complaints ? 'c' : ''} onChange={(e) => setComplaints(e.target.value === 'c')}><option value="">All ratings</option><option value="c">Complaints only</option></select>
+        </>}
+        actions={(r) => (
+          <div className="sp-row">
+            <Btn small disabled={!edit} onClick={() => openModal({ title: r.reply ? 'Edit your reply' : 'Reply to review', body: <ReplyForm r={r} onDone={reload} />, noActions: true })}>{r.reply ? 'Edit reply' : 'Reply'}</Btn>
+            {r.state !== 'hidden' ? <Btn small disabled={!edit} onClick={() => void mark(r, 'hidden')}>Hide</Btn> : <Btn small disabled={!edit} onClick={() => void mark(r, 'visible')}>Show</Btn>}
+            {r.state === 'visible' && <Btn small disabled={!edit} onClick={() => void mark(r, 'flagged')}>Flag</Btn>}
           </div>
-          {list.map((r) => (
-            <article key={r.id} className={`sp-review ${r.state === 'Hidden' ? 'hidden' : ''}`}>
-              <div className="sp-row">
-                <Person name={r.customerName} />
-                <div style={{ flex: 1 }}><b style={{ fontSize: 11 }}>{r.customerName}</b><div className="panel-sub">{r.topic} · {ago(r.at, now)}</div></div>
-                {r.state !== 'Visible' && <Badge tone={r.state === 'Hidden' ? 'gray' : 'amber'}>{r.state}</Badge>}
-                <Badge tone={isComplaint(r) ? 'red' : 'green'}>{isComplaint(r) ? 'Complaint' : 'Positive'}</Badge>
-              </div>
-              <div className="sp-stars" style={{ marginTop: 8 }} aria-label={`${r.rating} out of 5 stars`}>{'★'.repeat(r.rating)}<span className="off">{'★'.repeat(5 - r.rating)}</span></div>
-              <p>“{r.text}”</p>
-              {r.reply && <div className="sp-reply"><b>Your reply:</b> {r.reply}</div>}
-              <div className="sp-row">
-                <Btn small disabled={!edit} onClick={() => openModal({ title: r.reply ? 'Edit your reply' : `Reply to ${r.customerName}`, body: <ReplyForm review={r} />, noActions: true })}>{r.reply ? 'Edit reply' : 'Reply'}</Btn>
-                <Btn small disabled={!edit} onClick={() => { setReviewState(r.id, r.state === 'Flagged' ? 'Visible' : 'Flagged'); toast(r.state === 'Flagged' ? 'Flag removed' : 'Feedback flagged for review') }}>{r.state === 'Flagged' ? 'Unflag' : 'Flag'}</Btn>
-                <Btn small disabled={!edit} onClick={() => r.state === 'Hidden' ? (setReviewState(r.id, 'Visible'), toast('Review is visible again')) : openModal({ title: 'Hide this review?', message: 'This review will be hidden from public view while the moderation team checks it.', confirm: 'Hide review', danger: true, onConfirm: () => { setReviewState(r.id, 'Hidden'); toast('Review hidden') } })}>{r.state === 'Hidden' ? 'Show again' : 'Hide'}</Btn>
-                {isComplaint(r) && r.orderId && <Btn small onClick={() => navigate(`/orders/${r.orderId}`)}>View order</Btn>}
-              </div>
-            </article>
-          ))}
-          {!list.length && <p className="panel-sub">Nothing here.</p>}
-        </Panel>
-        <div className="sp-stack">
-          <Panel title="Moderation guide">
-            <p className="panel-sub" style={{ margin: '7px 0 12px' }}>Keep feedback visible unless it contains personal information, spam or abusive content.</p>
-            <Detail label="Response target">24 hours</Detail>
-            <Detail label="Escalate when">Safety or privacy concern</Detail>
-            <div style={{ marginTop: 10 }}><Btn small onClick={() => navigate('/support/help')}>Open policy guide</Btn></div>
-          </Panel>
-        </div>
-      </div>
+        )} />
     </>
   )
 }
 
-// ---- knowledge base -------------------------------------------------------------------------------------------
+// ---- help articles --------------------------------------------------------------------------------------------------
 
-function ArticleEditor({ article, onDone }: { article: Article | null; onDone: (id: string) => void }) {
-  const { saveArticle } = useSupport()
-  const { openModal, toast, can } = useStore()
-  const [title, setTitle] = useState(article?.title ?? '')
-  const [category, setCategory] = useState(article?.category ?? ARTICLE_CATEGORIES[0])
-  const [body, setBody] = useState(article?.body ?? '')
-  const [err, setErr] = useState<Record<string, string>>({})
-  const edit = can('Support', 'Edit') || (!article && can('Support', 'Create'))
-  const check = (needBody: boolean) => {
-    const e: Record<string, string> = {}
-    if (!title.trim()) e.title = 'Give the article a clear title'
-    if (needBody && !body.trim()) e.body = 'Write the answer before publishing'
-    setErr(e)
-    return !Object.keys(e).length
+interface Article { id: string; title: string; category: string; body: string; live: boolean; views: number; author: string; updatedAt: string }
+
+function ArticleForm({ a, categories, onDone }: { a?: Article; categories: string[]; onDone: () => void }) {
+  const { closeModal, toast } = useStore()
+  const [f, setF] = useState({ title: a?.title ?? '', category: a?.category ?? categories[0] ?? 'General', body: a?.body ?? '', live: a?.live ?? false })
+  const [err, setErr] = useState('')
+  const [busy, setBusy] = useState(false)
+  const full = useGet<{ body: string }>(a ? `/v1/admin/articles/${a.id}` : null)
+  const body = a && full.data && f.body === '' && !(a.body) ? full.data.body : f.body
+  const save = async () => {
+    if (!f.title.trim()) return setErr('Give the article a title')
+    if (f.live && body.trim().length < 20) return setErr('Write the article before publishing')
+    setBusy(true)
+    try { const payload = { title: f.title.trim(), category: f.category.trim() || 'General', body, live: f.live }; if (a) await patch(`/v1/admin/articles/${a.id}`, payload); else await post('/v1/admin/articles', payload); onDone(); closeModal(); toast('Article saved') } catch (e) { setErr(says(e)) } finally { setBusy(false) }
   }
-  const save = (live: boolean) => { const id = saveArticle({ id: article?.id, title: title.trim(), category, body: body.trim() }, live); toast(live ? 'Article published' : 'Article saved as draft'); onDone(id) }
   return (
-    <Panel title={article ? 'Article editor' : 'New article'} sub={article ? 'Edit the selected article.' : 'Write a new help article.'}>
-      <Field label="Title" value={title} onChange={(v) => { setTitle(v); setErr({}) }} error={err.title} />
-      <Field label="Category" value={category} onChange={setCategory} options={ARTICLE_CATEGORIES} />
-      <Field label="Answer" multiline value={body} onChange={(v) => { setBody(v); setErr({}) }} error={err.body} hint="Plain, short sentences. Say what to tap in the app." />
-      <div className="sp-row end">
-        <Btn disabled={!edit} onClick={() => check(false) && save(false)}>Save draft</Btn>
-        <Btn variant="primary" disabled={!edit} onClick={() => check(true) && openModal({ title: 'Publish article?', message: 'This answer will be visible to customers in the ShopCore app.', confirm: 'Publish', onConfirm: () => save(true) })}>Publish</Btn>
-      </div>
-    </Panel>
+    <>
+      <Field label="Title (the question)" value={f.title} onChange={(v) => setF((x) => ({ ...x, title: v }))} />
+      <Field label="Topic" value={f.category} onChange={(v) => setF((x) => ({ ...x, category: v }))} hint="Shoppers see articles grouped by topic. Existing topics: " />
+      <div className="sp-row" style={{ flexWrap: 'wrap', marginBottom: 8 }}>{categories.map((c) => <button key={c} className="pill" onClick={() => setF((x) => ({ ...x, category: c }))}>{c}</button>)}</div>
+      <Field label="Answer" multiline value={body} onChange={(v) => setF((x) => ({ ...x, body: v }))} error={err} />
+      <label className="sp-row" style={{ gap: 6, marginBottom: 8 }}><input type="checkbox" checked={f.live} onChange={(e) => setF((x) => ({ ...x, live: e.target.checked }))} /> Show in the app</label>
+      <div className="actions" style={{ justifyContent: 'flex-end' }}><Btn onClick={closeModal}>Cancel</Btn><Btn variant="primary" disabled={busy} onClick={() => void save()}>Save article</Btn></div>
+    </>
   )
 }
 
 export function KnowledgeBase() {
-  const { articles, missingSearches, addMissingToBacklog } = useSupport()
-  const { openModal, closeModal, can } = useStore()
-  const [q, setQ] = useState('')
-  const [sel, setSel] = useState<string>(articles[0]?.id ?? 'new')
-  const shown = articles.filter((a) => `${a.title} ${a.category}`.toLowerCase().includes(q.trim().toLowerCase()))
-  const current = sel === 'new' ? null : articles.find((a) => a.id === sel) ?? null
-
+  const { can, openModal } = useStore()
+  const { data, failed, loading, reload } = useGet<{ items: Article[] }>('/v1/admin/articles')
+  const missed = useGet<{ items: { q: string; count: number }[] }>('/v1/admin/help/missed-searches')
+  const rows = data?.items ?? []
+  const categories = [...new Set(rows.map((a) => a.category))]
+  const cols: Column<Article>[] = [
+    { key: 't', header: 'Article', sort: (a, b) => a.title.localeCompare(b.title), render: (a) => <div><b>{a.title}</b><div className="subtext">{a.category}</div></div> },
+    { key: 's', header: 'In the app', render: (a) => <Badge tone={a.live ? 'green' : 'gray'}>{a.live ? 'Live' : 'Draft'}</Badge> },
+    { key: 'v', header: 'Views', sort: (a, b) => a.views - b.views, render: (a) => a.views },
+    { key: 'u', header: 'Updated', render: (a) => dateTime(Date.parse(a.updatedAt)) },
+  ]
   return (
     <>
-      <PageHead
-        title="Knowledge base and FAQ editor"
-        desc="Keep customer help content accurate across the ShopCore apps."
-        actions={
-          <>
-            <Btn disabled={!current} onClick={() => current && openModal({ title: `Preview · ${current.title}`, body: <><Badge tone={current.live ? 'green' : 'amber'}>{current.live ? 'Live' : 'Draft'}</Badge><h3 style={{ margin: '10px 0 6px', fontSize: 15 }}>{current.title}</h3><p style={{ fontSize: 12, color: 'var(--muted)', whiteSpace: 'pre-wrap' }}>{current.body || 'No answer written yet.'}</p><div className="sp-row end sp-gap"><Btn variant="primary" onClick={closeModal}>Done</Btn></div></>, noActions: true })}>Preview</Btn>
-            <Btn variant="primary" disabled={!can('Support', 'Create')} onClick={() => setSel('new')}>+ New article</Btn>
-          </>
-        }
-      />
-      <div className="sp-editor">
-        <div className="sp-stack">
-          <Panel title="Help articles" sub="Content currently available in the customer app" right={<input className="sp-input" style={{ width: 210 }} aria-label="Search articles" placeholder="Search articles" value={q} onChange={(e) => setQ(e.target.value)} />}>
-            {shown.map((a) => (
-              <div className={`sp-list-row ${a.id === sel ? 'active' : ''}`} key={a.id}>
-                <div><b>{a.title}</b><span className="sp-sub">{a.category}</span></div>
-                <span><Badge tone={a.live ? 'green' : 'amber'}>{a.live ? 'Live' : 'Draft'}</Badge></span>
-                <span className="panel-sub">{a.live ? `${a.views.toLocaleString('en-US')} views` : '—'}</span>
-                <Btn small onClick={() => setSel(a.id)}>Edit</Btn>
-              </div>
-            ))}
-            {!shown.length && <p className="panel-sub">No articles match.</p>}
-          </Panel>
-          <Panel title="Popular searches with no answer" sub="Ideas from recent customer searches" right={<Btn small disabled={!missingSearches.length || !can('Support', 'Create')} onClick={addMissingToBacklog}>Add to backlog</Btn>}>
-            {missingSearches.map((m) => <div className="sp-detail" key={m.q}><b>{m.q}</b><span>{m.count} searches</span></div>)}
-            {!missingSearches.length && <p className="panel-sub">Nothing missing right now. The suggestions were added as drafts above.</p>}
-          </Panel>
-        </div>
-        <div className="sp-stack">
-          <ArticleEditor key={sel} article={current} onDone={setSel} />
-          {current && (
-            <Panel title="Publishing status">
-              <Detail label="Status">{current.live ? 'Live' : 'Draft'}</Detail>
-              <Detail label="Last saved">{when(current.updatedAt)}</Detail>
-              <Detail label="Locale">English (Kenya)</Detail>
-              <Detail label="Author">{current.author}</Detail>
-            </Panel>
-          )}
-        </div>
+      <PageHead title="Help centre articles" desc="The answers shoppers read in the app." actions={<Btn variant="primary" disabled={!can('Support', 'Create')} onClick={() => openModal({ title: 'New article', body: <ArticleForm categories={categories} onDone={reload} />, noActions: true })}>New article</Btn>} />
+      <div className="sp-two">
+        <DataTable title="Articles" rows={rows} rowKey={(a) => a.id} columns={cols} loading={loading} error={failed && !data ? 'We couldn’t load the articles.' : undefined} onRetry={reload} searchLabel="Search articles" searchText={(a) => `${a.title} ${a.category}`} emptyTitle="No articles yet" empty="Write answers to the questions shoppers ask most."
+          actions={(a) => <Btn small disabled={!can('Support', 'Edit')} onClick={() => openModal({ title: 'Edit article', body: <ArticleForm a={a} categories={categories} onDone={reload} />, noActions: true })}>Edit</Btn>} />
+        <Panel title="Searches with no answer" sub="What shoppers looked for and didn’t find. Write these next.">
+          {missed.data?.items.length === 0 && <div className="panel-sub">Nothing missing so far.</div>}
+          {missed.data?.items.slice(0, 12).map((m) => <SettingRow key={m.q} title={m.q} right={<Badge tone="gray">{`${m.count}×`}</Badge>} />)}
+        </Panel>
       </div>
     </>
   )
 }
 
-// ---- canned responses --------------------------------------------------------------------------------------------
+// ---- canned replies -------------------------------------------------------------------------------------------------
 
-function CannedEditor({ item, onDone }: { item: Canned | null; onDone: (id: string) => void }) {
-  const { saveCanned, deleteCanned } = useSupport()
-  const { openModal, toast, can } = useStore()
-  const [title, setTitle] = useState(item?.title ?? '')
-  const [category, setCategory] = useState(item?.category ?? CANNED_CATEGORIES[0])
-  const [text, setText] = useState(item?.text ?? '')
-  const [err, setErr] = useState<Record<string, string>>({})
-  const area = useRef<HTMLTextAreaElement>(null)
-  const edit = can('Support', 'Edit')
-  const insert = (token: string) => {
-    const el = area.current
-    const at = el?.selectionStart ?? text.length
-    setText(`${text.slice(0, at)}${token}${text.slice(el?.selectionEnd ?? at)}`)
-    requestAnimationFrame(() => { el?.focus(); el?.setSelectionRange(at + token.length, at + token.length) })
-  }
-  const save = (live: boolean) => {
-    const e: Record<string, string> = {}
-    if (!title.trim()) e.title = 'Give the response a short title'
-    if (!text.trim()) e.text = 'Write the message'
-    setErr(e)
-    if (Object.keys(e).length) return
-    const id = saveCanned({ id: item?.id, title: title.trim(), category, text: text.trim(), live })
-    toast(live ? 'Canned response published' : 'Response saved as draft')
-    onDone(id)
+interface Canned { id: string; title: string; category: string; text: string; uses: number; live: boolean }
+
+function CannedForm({ c, onDone }: { c?: Canned; onDone: () => void }) {
+  const { closeModal, toast } = useStore()
+  const [f, setF] = useState({ title: c?.title ?? '', category: c?.category ?? 'General', text: c?.text ?? '', live: c?.live ?? true })
+  const [err, setErr] = useState('')
+  const save = async () => {
+    if (!f.title.trim() || !f.text.trim()) return setErr('Add a title and the reply text')
+    try { if (c) await patch(`/v1/admin/canned-replies/${c.id}`, f); else await post('/v1/admin/canned-replies', f); onDone(); closeModal(); toast('Reply saved') } catch (e) { setErr(says(e)) }
   }
   return (
-    <Panel title="Response editor" sub={item ? 'Edit this response.' : 'Create a new response.'}>
-      <Field label="Response title" value={title} onChange={(v) => { setTitle(v); setErr({}) }} error={err.title} />
-      <Field label="Category" value={category} onChange={setCategory} options={CANNED_CATEGORIES} />
-      <div className="field">
-        <label htmlFor="canned-text">Message</label>
-        <textarea id="canned-text" ref={area} className="sp-text" style={{ minHeight: 150 }} value={text} onChange={(e) => { setText(e.target.value); setErr({}) }} aria-invalid={!!err.text} />
-        {err.text && <div className="field-error">{err.text}</div>}
-      </div>
-      <div className="panel-sub sp-row" style={{ marginBottom: 12 }}>Personalisation: {TOKENS.map((t) => <Btn small key={t.token} onClick={() => insert(t.token)}>{t.label}</Btn>)}</div>
-      <div className="sp-row end">
-        {item && <Btn variant="danger" disabled={!can('Support', 'Edit')} onClick={() => openModal({ title: 'Delete this response?', message: `“${item.title}” will no longer be offered to agents.`, confirm: 'Delete', danger: true, onConfirm: () => { deleteCanned(item.id); toast('Response deleted'); onDone('new') } })}>Delete</Btn>}
-        <Btn disabled={!edit} onClick={() => save(false)}>Save draft</Btn>
-        <Btn variant="primary" disabled={!edit} onClick={() => save(true)}>Publish response</Btn>
-      </div>
-    </Panel>
+    <>
+      <div className="sp-form2"><Field label="Title" value={f.title} onChange={(v) => setF((x) => ({ ...x, title: v }))} /><Field label="Group" value={f.category} onChange={(v) => setF((x) => ({ ...x, category: v }))} /></div>
+      <Field label="Reply text" multiline value={f.text} onChange={(v) => { setF((x) => ({ ...x, text: v })); setErr('') }} error={err} />
+      <label className="sp-row" style={{ gap: 6, marginBottom: 8 }}><input type="checkbox" checked={f.live} onChange={(e) => setF((x) => ({ ...x, live: e.target.checked }))} /> Available to the team</label>
+      <div className="actions" style={{ justifyContent: 'flex-end' }}><Btn onClick={closeModal}>Cancel</Btn><Btn variant="primary" onClick={() => void save()}>Save reply</Btn></div>
+    </>
   )
 }
 
 export function CannedResponses() {
-  const { canned } = useSupport()
-  const [q, setQ] = useState('')
-  const [sel, setSel] = useState<string>(canned[0]?.id ?? 'new')
-  const { can } = useStore()
-  const shown = canned.filter((c) => `${c.title} ${c.text} ${c.category}`.toLowerCase().includes(q.trim().toLowerCase()))
-  const current = canned.find((c) => c.id === sel) ?? null
-  const top = Math.max(1, ...canned.map((c) => c.uses))
-  const used = [...canned].sort((a, b) => b.uses - a.uses).slice(0, 5)
-
+  const { can, openModal } = useStore()
+  const { data, failed, loading, reload } = useGet<{ items: Canned[] }>('/v1/admin/canned-replies')
+  const cols: Column<Canned>[] = [
+    { key: 't', header: 'Reply', render: (c) => <div><b>{c.title}</b><div className="subtext">{c.category}</div></div> },
+    { key: 'x', header: 'Text', render: (c) => <div style={{ maxWidth: 380 }}>{c.text}</div> },
+    { key: 'u', header: 'Used', sort: (a, b) => a.uses - b.uses, render: (c) => c.uses },
+    { key: 's', header: 'Status', render: (c) => <Badge tone={c.live ? 'green' : 'gray'}>{c.live ? 'Available' : 'Off'}</Badge> },
+  ]
   return (
     <>
-      <PageHead title="Canned responses manager" desc="Create consistent, helpful replies for common customer and rider questions." actions={<Btn variant="primary" disabled={!can('Support', 'Edit')} onClick={() => setSel('new')}>+ New response</Btn>} />
-      <div className="sp-editor">
-        <div className="sp-stack">
-          <Panel title="Saved responses" sub={`${canned.filter((c) => c.live).length} active responses · Used by support`} right={<input className="sp-input" style={{ width: 210 }} aria-label="Search canned responses" placeholder="Search responses" value={q} onChange={(e) => setQ(e.target.value)} />}>
-            {shown.map((c) => (
-              <div className={`sp-list-row ${c.id === sel ? 'active' : ''}`} key={c.id}>
-                <div><b>{c.title}</b><span className="sp-sub">{c.text.length > 90 ? `${c.text.slice(0, 90)}…` : c.text}</span></div>
-                <span>{c.category}{!c.live && <> · <Badge tone="amber">Draft</Badge></>}</span>
-                <span className="panel-sub">Used {c.uses} times</span>
-                <Btn small onClick={() => setSel(c.id)}>Edit</Btn>
-              </div>
-            ))}
-            {!shown.length && <p className="panel-sub">No responses match.</p>}
-          </Panel>
-          <Panel title="Response usage" sub="This month">
-            {used.map((c) => (
-              <div className="sp-sla" key={c.id}><span>{c.title}</span><b>{c.uses} uses</b><div className="sp-progress"><span style={{ width: `${(c.uses / top) * 100}%` }} /></div></div>
-            ))}
-          </Panel>
-        </div>
-        <div className="sp-stack">
-          <CannedEditor key={sel} item={current} onDone={setSel} />
-          <Panel title="Usage guidance"><p className="panel-sub">Use a saved reply as a starting point. Personalise it before sending, especially for sensitive payment or delivery issues. Words in double braces are filled in automatically when an agent inserts the reply.</p></Panel>
-        </div>
-      </div>
+      <PageHead title="Saved replies" desc="Answers the team uses again and again. Pick one while replying to a ticket." actions={<Btn variant="primary" disabled={!can('Support', 'Create')} onClick={() => openModal({ title: 'New saved reply', body: <CannedForm onDone={reload} />, noActions: true })}>New reply</Btn>} />
+      <DataTable title="Saved replies" rows={data?.items ?? []} rowKey={(c) => c.id} columns={cols} loading={loading} error={failed && !data ? 'We couldn’t load the replies.' : undefined} onRetry={reload} searchLabel="Search replies" searchText={(c) => `${c.title} ${c.text}`} emptyTitle="No saved replies yet" empty="Add the answers you give most often."
+        actions={(c) => <Btn small disabled={!can('Support', 'Edit')} onClick={() => openModal({ title: 'Edit saved reply', body: <CannedForm c={c} onDone={reload} />, noActions: true })}>Edit</Btn>} />
     </>
   )
 }

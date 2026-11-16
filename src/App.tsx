@@ -5,10 +5,6 @@ import { MaintenanceScreen, OfflineBanner, PageBoundary, PermissionDenied } from
 import { Btn, Notice, PageHead } from './components/ui'
 import { canOpen, displayLabel, navigate, pageFor, rolesWith, usePath } from './lib/router'
 import { StoreProvider, useStore } from './lib/store'
-import { SupportProvider } from './lib/support'
-import { FinanceProvider } from './lib/finance'
-import { InventoryProvider } from './lib/inventory'
-import { MarketingProvider } from './lib/marketing'
 import { AuditLog, Roles } from './pages/Access'
 import { CustomerDetail, CustomersList } from './pages/Customers'
 import Overview from './pages/Overview'
@@ -34,9 +30,8 @@ import Login from './pages/Login'
 import { NewOrder, OrderDetail, OrdersList } from './pages/Orders'
 import { ProductForm, ProductsList } from './pages/Products'
 import Reports from './pages/Reports'
-import SystemStates from './pages/SystemStates'
 import { Applications, RiderDetail, RidersList } from './pages/Riders'
-import { Health, Integrations, Templates } from './pages/System'
+import { Health, Integrations } from './pages/System'
 import { CustomerLookup, Disputes, RefundReview, RefundsList, ReturnDetail, ReturnsList } from './pages/Claims'
 import { CannedResponses, KnowledgeBase, Reviews } from './pages/Content'
 import { LiveChat, TicketDetail, TicketsInbox } from './pages/Support'
@@ -50,14 +45,14 @@ function NotFound() {
   )
 }
 
-function NoAccess({ role, label }: { role: string; label: string }) {
+function NoAccess({ role, label, name }: { role: string; label: string; name: string }) {
   const { permissions, requestAccess, requestedAccess } = useStore()
   const needed = rolesWith(label, permissions)
   return (
     <>
       <PageHead title="No access" desc={`The ${role} role can’t open this page.`} actions={<Btn onClick={() => navigate('/')}>Go to my home page</Btn>} />
       <section className="card panel">
-        <PermissionDenied title={`You don’t have permission to open ${label.toLowerCase()}`} body="This page belongs to another department. If you need it for your work, ask your workspace owner for access." yourRole={role} requiredRole={needed.join(' or ')} onRequest={() => requestAccess(label)} requested={requestedAccess.includes(label)} />
+        <PermissionDenied title={`You don’t have permission to open ${name.toLowerCase()}`} body="This page belongs to another department. If you need it for your work, ask your workspace owner for access." yourRole={role} requiredRole={needed.join(' or ')} onRequest={() => requestAccess(label)} requested={requestedAccess.includes(label)} />
       </section>
     </>
   )
@@ -78,7 +73,6 @@ function route(path: string): ReactNode {
   if (path === '/settings/business') return <BusinessSettings />
   if (path === '/settings/payments') return <PaymentSettings />
   if (path === '/settings/delivery') return <DeliverySettings />
-  if (path === '/templates') return <Templates />
   if (path === '/integrations') return <Integrations />
   if (path === '/health') return <Health />
   if (path === '/orders') return <OrdersList />
@@ -182,7 +176,6 @@ function route(path: string): ReactNode {
   if (path === '/support/reviews') return <Reviews />
   if (path === '/support/help') return <KnowledgeBase />
   if (path === '/support/canned') return <CannedResponses />
-  if (path === '/system/states') return <SystemStates />
   if (path === '/account') return <Account />
   return <NotFound />
 }
@@ -233,7 +226,7 @@ function Shell() {
         <section className="content" aria-live="polite">
           {offline && <OfflineBanner onRetry={() => { setForceOffline(false); if (navigator.onLine) toast('Back online'); else toast('Still offline. Check your connection and try again.', 'error') }} />}
           {maintenance.on && <div className="banner info" role="status"><strong>Maintenance mode is on</strong><span>Only owners and IT support can use the admin right now.</span><Btn small onClick={() => setMaintenance({ ...maintenance, on: false })}>Turn off</Btn></div>}
-          {blocked ? <NoAccess role={role} label={page?.label ?? 'this page'} /> : <PageBoundary key={path}>{route(path)}</PageBoundary>}
+          {blocked ? <NoAccess role={role} label={page?.label ?? 'this page'} name={page ? displayLabel(page.label, role, permissions[role]) : 'this page'} /> : <PageBoundary key={path}>{route(path)}</PageBoundary>}
         </section>
       </main>
       <Drawer />
@@ -243,29 +236,12 @@ function Shell() {
   )
 }
 
-/**
- * Pages that are not connected to the server yet keep their sample data in these providers. They are rebuilt once the team list
- * has arrived after sign-in, so the samples that refer to staff (payroll, support agents) have people to refer to.
- */
-function SamplePages({ children }: { children: ReactNode }) {
-  const { user, staff } = useStore()
-  return (
-    <SupportProvider key={`${user?.id ?? 'out'}:${staff.length ? 'ready' : 'wait'}`}>
-      <FinanceProvider>
-        <MarketingProvider>
-          <InventoryProvider>{children}</InventoryProvider>
-        </MarketingProvider>
-      </FinanceProvider>
-    </SupportProvider>
-  )
-}
-
 export default function App() {
   return (
     <StoreProvider>
-      <SamplePages>
+      <>
         <Shell />
-      </SamplePages>
+      </>
     </StoreProvider>
   )
 }

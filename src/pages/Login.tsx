@@ -31,14 +31,27 @@ export default function Login() {
 
   return (
     <div className="login-page">
-      <main className="login-card card" aria-labelledby="login-title">
-        <div className="brand" style={{ padding: 0, marginBottom: 18 }}>
+      <aside className="login-hero">
+        <div className="brand">
           <span className="brand-mark" aria-hidden="true">S</span>
-          <span className="brand-name">ShopCore Admin</span>
+          <span>ShopCore Admin</span>
         </div>
+        <div>
+          <h2>Run the whole shop from one place.</h2>
+          <p>Orders, deliveries, stock, riders and money, together and up to date.</p>
+          <ul className="login-points">
+            <li><i aria-hidden="true">🛍</i>See and manage every order</li>
+            <li><i aria-hidden="true">🛵</i>Track riders and deliveries live</li>
+            <li><i aria-hidden="true">📦</i>Keep stock and prices right</li>
+          </ul>
+        </div>
+        <div className="login-foot">For ShopCore staff only</div>
+      </aside>
+      <div className="login-side">
+      <main className="login-card" aria-labelledby="login-title">
         <form onSubmit={submit} noValidate>
           <h1 id="login-title">Sign in</h1>
-          <p className="login-sub">For ShopCore staff and administrators.</p>
+          <p className="login-sub">Welcome back. Enter your work details to continue.</p>
           {error && <div style={{ marginBottom: 12 }}><Notice tone="error" mark="!">{error}</Notice></div>}
           <div className="field">
             <label htmlFor="login-email">Work email</label>
@@ -61,7 +74,9 @@ export default function Login() {
           )}
           <button className="btn primary" type="submit" style={{ width: '100%' }} disabled={busy}>{busy ? 'Signing in…' : 'Sign in'}</button>
         </form>
+        <div className="login-secure">Your connection is private and every sign-in is recorded.</div>
       </main>
+      </div>
     </div>
   )
 }

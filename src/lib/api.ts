@@ -43,12 +43,13 @@ let onSignedOut: (() => void) | null = null
 /** Called when the session can't be kept alive (the person must sign in again). */
 export const setSignedOutHandler = (fn: (() => void) | null) => { onSignedOut = fn }
 
-async function send(method: string, path: string, body: unknown, token: string | null): Promise<Response> {
-  const headers: Record<string, string> = { 'x-client': 'web' }
-  if (body !== undefined) headers['content-type'] = 'application/json'
+async function send(method: string, path: string, body: unknown, token: string | null, extra?: Record<string, string>, raw?: { blob: Blob; type: string }): Promise<Response> {
+  const headers: Record<string, string> = { 'x-client': 'web', ...extra }
+  if (raw) headers['content-type'] = raw.type
+  else if (body !== undefined) headers['content-type'] = 'application/json'
   if (token) headers.authorization = `Bearer ${token}`
   try {
-    return await fetch(`${BASE}${path}`, { method, headers, body: body === undefined ? undefined : JSON.stringify(body), credentials: 'same-origin' })
+    return await fetch(`${BASE}${path}`, { method, headers, body: raw ? raw.blob : body === undefined ? undefined : JSON.stringify(body), credentials: 'same-origin' })
   } catch {
     throw new ApiError(0, 'NETWORK', 'Can’t reach the server. Check your connection and try again.')
   }
@@ -84,12 +85,12 @@ function refresh(): Promise<Tokens | null> {
   return refreshing
 }
 
-export async function api<T = unknown>(method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE', path: string, body?: unknown): Promise<T> {
-  let res = await send(method, path, body, accessToken)
+export async function api<T = unknown>(method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE', path: string, body?: unknown, headers?: Record<string, string>, raw?: { blob: Blob; type: string }): Promise<T> {
+  let res = await send(method, path, body, accessToken, headers, raw)
   if (res.status === 401 && !path.startsWith('/v1/auth/')) {
     const t = await refresh()
     if (!t) { accessToken = null; onSignedOut?.(); throw new ApiError(401, 'SIGNED_OUT', 'Your session has ended. Please sign in again.') }
-    res = await send(method, path, body, accessToken)
+    res = await send(method, path, body, accessToken, headers, raw)
   }
   if (res.status === 204) return undefined as T
   if (!res.ok) throw await failure(res)
@@ -97,8 +98,12 @@ export async function api<T = unknown>(method: 'GET' | 'POST' | 'PUT' | 'PATCH' 
 }
 export const get = <T = unknown>(path: string) => api<T>('GET', path)
 export const post = <T = unknown>(path: string, body?: unknown) => api<T>('POST', path, body ?? {})
-export const patch = <T = unknown>(path: string, body: unknown) => api<T>('PATCH', path, body)
-export const put = <T = unknown>(path: string, body: unknown) => api<T>('PUT', path, body)
+export const patch = <T = unknown>(path: string, body: unknown, version?: number) => api<T>('PATCH', path, body, version === undefined ? undefined : { 'if-match': `"${version}"` })
+export const put = <T = unknown>(path: string, body: unknown, version?: number) => api<T>('PUT', path, body, version === undefined ? undefined : { 'if-match': `"${version}"` })
+
+/** Sends a picture as the request body (the server wants the bare file). */
+export const uploadFile = (kind: 'product-image' | 'banner' | 'avatar', file: File) =>
+  api<{ id: string; url: string }>('PUT', `/v1/uploads?kind=${kind}&name=${encodeURIComponent(file.name)}`, undefined, undefined, { blob: file, type: file.type || 'image/jpeg' })
 export const del = <T = unknown>(path: string) => api<T>('DELETE', path)
 
 export async function signIn(email: string, password: string): Promise<{ me: ApiMe; mustChange: boolean }> {
@@ -125,4 +130,24 @@ export async function changePassword(currentPassword: string, newPassword: strin
   if (!res.ok) throw await failure(res)
   const t = (await res.json()) as Partial<Tokens>
   if (t.accessToken) accessToken = t.accessToken
+}
+
+/** Opens a private file (such as a photo a customer attached) in a new tab. The file needs the signed-in token, so it is fetched first. */
+export async function openFile(path: string): Promise<void> {
+  const go = (token: string | null) => fetch(`${BASE}${path}`, { headers: token ? { authorization: `Bearer ${token}` } : {}, credentials: 'same-origin' })
+  let res = await go(accessToken)
+  if (res.status === 401) { const t = await refresh(); if (t) res = await go(accessToken) }
+  if (!res.ok) throw new ApiError(res.status, 'FILE', 'We couldn’t open that file.')
+  const url = URL.createObjectURL(await res.blob())
+  window.open(url, '_blank', 'noopener')
+  setTimeout(() => URL.revokeObjectURL(url), 60_000)
+}
+
+/** Sends a request whose answer is a file (such as a CSV) and returns it as text. */
+export async function postForText(path: string, body: unknown): Promise<string> {
+  const go = (token: string | null) => fetch(`${BASE}${path}`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-client': 'web', ...(token ? { authorization: `Bearer ${token}` } : {}) }, body: JSON.stringify(body), credentials: 'same-origin' })
+  let res = await go(accessToken)
+  if (res.status === 401) { const t = await refresh(); if (t) res = await go(accessToken) }
+  if (!res.ok) throw await failure(res)
+  return res.text()
 }

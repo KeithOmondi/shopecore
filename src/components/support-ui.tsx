@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from 'react'
 
-import type { Priority } from '../data/support'
+type Priority = 'Urgent' | 'High' | 'Normal' | 'Low'
 import { initials } from '../data/seed'
 import { dateTime } from '../lib/format'
 

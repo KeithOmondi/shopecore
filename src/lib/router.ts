@@ -246,13 +246,11 @@ export const NAV_GROUPS: { label: string; items: NavItem[] }[] = [
       { label: 'Delivery settings', icon: '⌖', path: '/settings/delivery', match: (p) => p === '/settings/delivery' },
     ],
   },
-  { label: 'COMMUNICATION', items: [{ label: 'Notification templates', icon: '✉', path: '/templates', match: (p) => p === '/templates' }] },
   {
     label: 'SYSTEM',
     items: [
-      { label: 'Integrations and API keys', icon: '⌘', path: '/integrations', match: (p) => p === '/integrations' },
-      { label: 'Backup and system health', icon: '◷', path: '/health', match: (p) => p === '/health' },
-      { label: 'System states', icon: '◌', path: '/system/states', match: (p) => p === '/system/states' },
+      { label: 'Integrations', icon: '⌘', path: '/integrations', match: (p) => p === '/integrations' },
+      { label: 'System health', icon: '◷', path: '/health', match: (p) => p === '/health' },
     ],
   },
 ]
@@ -284,9 +282,9 @@ export const PAGE_MODULE: Record<string, string> = {
   // marketing
   'Marketing overview': 'Marketing', 'Coupons list': 'Marketing', 'Flash sales': 'Marketing', 'Promotions and bundles': 'Marketing', 'Campaign analytics': 'Marketing', 'Push notifications': 'Marketing', 'SMS and email campaigns': 'Marketing',
   'Audience segments': 'Marketing', 'Loyalty points rules': 'Marketing', 'Referral program settings': 'Marketing', 'Reviews highlights': 'Marketing', 'Banners manager': 'Marketing', 'Homepage layout builder': 'Marketing', 'Content pages editor': 'Marketing',
-  'Category and landing page content': 'Marketing', 'Notification templates': 'Marketing',
+  'Category and landing page content': 'Marketing',
   // people, access and system
-  'Staff list': 'Staff', 'Add/edit staff': 'Staff', 'Roles and permissions matrix': 'Access', 'Audit log': 'Access', 'Integrations and API keys': 'System', 'System states': 'System', 'Backup and system health': 'System', 'Business settings': 'Settings',
+  'Staff list': 'Staff', 'Add/edit staff': 'Staff', 'Roles and permissions matrix': 'Access', 'Audit log': 'Access', 'Integrations': 'System', 'System health': 'System', 'Business settings': 'Settings',
 }
 
 /** Customer support only sees the monitoring side of dispatch (not assignment or rider management). */
@@ -322,9 +320,50 @@ export function homeOf(role: string, perms: Record<string, boolean[]> | undefine
   }
 }
 
+/**
+ * What the sidebar and page titles say, in everyday words. The long names above stay as the internal keys for access rules,
+ * so changing a name here never changes who can open a page.
+ */
+const PLAIN_PAGE: Record<string, string> = {
+  'Executive overview': 'Dashboard', 'System overview': 'Dashboard', 'Support overview': 'Dashboard', Home: 'Dashboard',
+  'Tickets inbox': 'Help requests', 'Live chat console': 'Live chat', 'Rider support tickets': 'Rider help requests', Disputes: 'Customer disputes',
+  'Refund requests': 'Refund requests', 'Returns requests': 'Return requests', 'Customer lookup': 'Find a customer',
+  'Reviews and complaints moderation': 'Customer reviews', 'Knowledge base and FAQ editor': 'Help articles', 'Canned responses manager': 'Saved replies',
+  'Marketing overview': 'Promotions overview', 'Coupons list': 'Coupons', 'Flash sales': 'Flash sales', 'Promotions and bundles': 'Bundles and offers', 'Campaign analytics': 'Campaign results',
+  'Push notifications': 'Phone notifications', 'SMS and email campaigns': 'Texts and emails', 'Audience segments': 'Customer groups', 'Loyalty points rules': 'Reward points',
+  'Referral program settings': 'Invite a friend', 'Reviews highlights': 'Featured reviews',
+  'Banners manager': 'Banners', 'Homepage layout builder': 'Home screen layout', 'Content pages editor': 'Info pages (terms, privacy)', 'Category and landing page content': 'Category pages',
+  'Dispatch overview': 'Deliveries overview', 'Order queue': 'Orders waiting for a rider', 'Assign rider': 'Assign a rider', 'Live order detail': 'Track a delivery',
+  'Reassign order': 'Change the rider', 'Delayed and stuck orders': 'Late orders',
+  'Inventory overview': 'Stock overview', 'Categories and subcategories': 'Categories', 'Stock levels by warehouse': 'Stock by location', 'Low-stock alerts and reorder settings': 'Low stock alerts',
+  'Purchase orders list': 'Supplier orders', 'Create purchase order': 'New supplier order', 'Receive stock': 'Receive stock', 'Suppliers list and detail': 'Suppliers',
+  'Order packing queue': 'Orders to pack', 'Returns restock': 'Returned items', 'Stock take / cycle count': 'Stock count',
+  'Stock movement history': 'Stock history', 'Stock adjustment': 'Adjust stock', 'Bulk import and export': 'Import and export products', 'Barcode and label printing': 'Print labels',
+  'Riders list': 'All riders', 'Rider detail': 'Rider profile', 'Rider application review': 'New rider applications', 'Delivery zones': 'Delivery areas', 'Rider shifts and capacity': 'Rider schedule',
+  'Cancelled and failed deliveries': 'Failed deliveries', 'Incidents and SOS alerts': 'Rider emergencies',
+  'Finance overview': 'Money overview', 'Failed payments and retries': 'Failed payments', Reconciliation: 'Payment checks', 'Refunds ledger': 'Refunds paid',
+  'Taxes and VAT report': 'VAT report', 'Profit and loss summary': 'Profit and loss', 'Accounts and ledger': 'Accounts',
+  'COD management': 'Cash on delivery', 'Record COD deposit': 'Record cash handed in', 'Rider payouts': 'Rider pay', 'Payout batch': 'Pay riders in bulk',
+  'Rider earnings statements': 'Rider earnings', 'Store settlements': 'Settlements',
+  'Invoices list': 'Invoices', 'Delivery cost report': 'Delivery costs', 'Expense tracking': 'Expenses', 'Export center': 'Downloads',
+  'Payroll runs': 'Pay staff', 'Employee pay profiles': 'Staff pay details', 'Statutory remittances': 'Tax and statutory payments',
+  'Financial period close': 'Close the month', 'Finance settings': 'Money settings',
+  'Staff list': 'Staff', 'Add/edit staff': 'Add or edit staff', 'Customers list': 'Customers', 'Customer detail': 'Customer profile',
+  'Roles and permissions matrix': 'Roles and access', 'Audit log': 'Activity log',
+  'Business settings': 'Business details', 'Payment gateway settings': 'Payment settings', Integrations: 'Connected services', 'System health': 'System status',
+}
+const PLAIN_GROUP: Record<string, string> = {
+  OVERVIEW: 'Home', SUPPORT: 'Customer help', CLAIMS: 'Refunds and returns', 'QUALITY & CONTENT': 'Reviews and help articles', CAMPAIGNS: 'Promotions',
+  'CUSTOMER ENGAGEMENT': 'Messages to customers', CONTENT: 'App and website content', DISPATCH: 'Deliveries', COMMERCE: 'Sales', INVENTORY: 'Products and stock',
+  PURCHASING: 'Buying from suppliers', FULFILMENT: 'Packing and returns', 'STOCK TOOLS': 'Stock tools', 'RIDER OPERATIONS': 'Riders', EXCEPTIONS: 'Problems',
+  FINANCE: 'Money', 'COD & PAYOUTS': 'Cash and rider pay', 'BILLING & REPORTS': 'Invoices and reports', PAYROLL: 'Staff salaries', CONTROLS: 'Money settings',
+  INSIGHTS: 'Reports', PEOPLE: 'People', 'ACCESS & AUDIT': 'Access and activity', 'BUSINESS SETTINGS': 'Settings', SYSTEM: 'System',
+}
+export const plainGroup = (label: string) => PLAIN_GROUP[label] ?? label
 /** The home page is a different page for different people, so its name changes with the role. */
 export function displayLabel(label: string, role: string, perms: Record<string, boolean[]> | undefined): string {
-  return label === 'Executive overview' ? homeOf(role, perms).label : label
+  const name = label === 'Executive overview' ? homeOf(role, perms).label : label
+  return PLAIN_PAGE[name] ?? name
 }
 
 /** The roles that can open a page, so a blocked person knows who to ask. */
@@ -332,3 +371,6 @@ export function rolesWith(label: string, all: Record<string, Record<string, bool
   const mod = PAGE_MODULE[label]
   return Object.keys(all).filter((r) => r === 'Owner admin' || (mod ? !!all[r]?.[mod]?.[0] : false))
 }
+
+/** A page's own heading in everyday words (page code still passes the long internal name). */
+export const plainTitle = (title: string) => PLAIN_PAGE[title] ?? title

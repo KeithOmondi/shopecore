@@ -4,15 +4,10 @@ import { setLeavePrompt } from './router'
 import * as server from './api'
 import { ApiError, type ApiMe } from './api'
 
-import { seedFailures, seedIncidents, seedShifts, type Failure, type Incident, type Shift } from '../data/ops'
-import {
-  CATEGORIES, seedDeposits, seedOrders, seedPayouts, seedProducts, seedRiders, transactionsFrom,
-  type CashDeposit, type Order, type Payout, type Product, type Rider, type Transaction,
-} from '../data/commerce'
 import {
   whenLabel,
-  ACTIONS, MODULES, BUSINESS_DEFAULTS, PAYMENT_DEFAULTS, ROLES, seedBackups, seedCustomers, seedIntegrations, seedKeys, seedTemplates, seedZones,
-  type ApiKey, type AuditEntry, type Backup, type Customer, type Integration, type Permissions, type Role, type Staff, type Template, type Zone,
+  ACTIONS, MODULES, ROLES,
+  type AuditEntry, type Permissions, type Role, type Staff,
 } from '../data/seed'
 
 export interface ModalSpec {
@@ -40,9 +35,6 @@ export interface DrawerSpec {
   title: string
   body: ReactNode
 }
-
-type Business = typeof BUSINESS_DEFAULTS
-type Payments = typeof PAYMENT_DEFAULTS
 
 interface Store {
   // shell
@@ -87,28 +79,6 @@ interface Store {
   previewRole: Role | null
   setPreviewRole: (r: Role | null) => void
   can: (module: (typeof MODULES)[number], action: (typeof ACTIONS)[number]) => boolean
-  // commerce
-  orders: Order[]
-  setOrders: (o: Order[]) => void
-  products: Product[]
-  setProducts: (p: Product[]) => void
-  categories: string[]
-  setCategories: (c: string[]) => void
-  riders: Rider[]
-  setRiders: (r: Rider[]) => void
-  transactions: Transaction[]
-  payouts: Payout[]
-  setPayouts: (p: Payout[]) => void
-  deposits: CashDeposit[]
-  setDeposits: (d: CashDeposit[]) => void
-  failures: Failure[]
-  setFailures: (f: Failure[]) => void
-  incidents: Incident[]
-  setIncidents: (i: Incident[]) => void
-  shifts: Shift[]
-  setShifts: (s: Shift[]) => void
-  /** Put a rider on an order (or take them off with null). */
-  assignRider: (orderId: string, riderId: string | null, note?: string) => void
   // data
   staff: Staff[]
   /** Creates the account with a temporary password (returned once). */
@@ -123,28 +93,9 @@ interface Store {
   canManageStaff: boolean
   /** Returns an error message, or null when it saved. */
   updateStaff: (id: string, patch: Partial<Staff>) => Promise<string | null>
-  customers: Customer[]
-  addNote: (customerId: string, text: string) => void
-  updateCustomer: (id: string, patch: Partial<Customer>) => void
   audit: AuditEntry[]
   log: (action: string, module: string, type?: AuditEntry['type']) => void
   permissions: Record<Role, Permissions>
-  zones: Zone[]
-  setZones: (z: Zone[]) => void
-  business: Business
-  setBusiness: (b: Business) => void
-  payments: Payments
-  setPayments: (p: Payments) => void
-  templates: Template[]
-  setTemplates: (t: Template[]) => void
-  integrations: Integration[]
-  setIntegrations: (i: Integration[]) => void
-  keys: ApiKey[]
-  setKeys: (k: ApiKey[]) => void
-  backups: Backup[]
-  addBackup: (type: Backup['type']) => void
-  autoBackup: boolean
-  setAutoBackup: (on: boolean) => void
 }
 
 const StoreContext = createContext<Store | null>(null)
@@ -161,13 +112,14 @@ const auditType = (action: string, module: string): AuditEntry['type'] =>
 
 const readDark = () => {
   try {
-    return localStorage.getItem('shopcore-admin-dark') === '1'
+    // The dark brown finish is the default; people who switched to light keep light.
+    return localStorage.getItem('shopcore-admin-dark') !== '0'
   } catch {
-    return false
+    return true
   }
 }
 
-/** All the admin's in-memory state for the dummy-data phase. */
+/** The admin's shared state: who is signed in and what they may do, plus small interface state. Everything else is loaded by the pages from the server. */
 export function StoreProvider({ children }: { children: ReactNode }) {
   const [me, setMe] = useState<ApiMe | null>(null)
   const [booting, setBooting] = useState(true)
@@ -181,39 +133,13 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [online, setOnline] = useState(() => (typeof navigator === 'undefined' ? true : navigator.onLine))
   const [forceOffline, setForceOffline] = useState(false)
   const [requestedAccess, setRequestedAccess] = useState<string[]>([])
-  const [maintenance, setMaintenanceState] = useState<Maintenance>(() => {
-    try {
-      const raw = localStorage.getItem('shopcore-maintenance')
-      if (raw) return JSON.parse(raw) as Maintenance
-    } catch {
-      /* start with it off */
-    }
-    return { on: false, message: '', etaMinutes: 15 }
-  })
+  const [maintenance, setMaintenanceState] = useState<Maintenance>({ on: false, message: '', etaMinutes: 15 })
   const toastTimer = useRef<ReturnType<typeof setTimeout>>(undefined)
   const [drawer, setDrawer] = useState<DrawerSpec | null>(null)
   const [modal, setModal] = useState<ModalSpec | null>(null)
 
   const [staff, setStaff] = useState<Staff[]>([])
-  const [orders, setOrders] = useState(seedOrders)
-  const [failures, setFailures] = useState(seedFailures)
-  const [incidents, setIncidents] = useState(seedIncidents)
-  const [shifts, setShifts] = useState(() => seedShifts(seedRiders().filter((r) => r.status === 'Online').map((r) => r.id), ['Westlands', 'Kilimani', 'CBD', 'Karen']))
-  const [products, setProducts] = useState(seedProducts)
-  const [categories, setCategories] = useState<string[]>([...CATEGORIES])
-  const [riders, setRiders] = useState(seedRiders)
-  const [payouts, setPayouts] = useState(() => seedPayouts(seedRiders()))
-  const [deposits, setDeposits] = useState(() => seedDeposits(seedRiders()))
-  const [customers, setCustomers] = useState(seedCustomers)
   const [audit, setAudit] = useState<AuditEntry[]>([])
-  const [zones, setZones] = useState(seedZones)
-  const [business, setBusiness] = useState<Business>(BUSINESS_DEFAULTS)
-  const [payments, setPayments] = useState<Payments>(PAYMENT_DEFAULTS)
-  const [templates, setTemplates] = useState(seedTemplates)
-  const [integrations, setIntegrations] = useState(seedIntegrations)
-  const [keys, setKeys] = useState(seedKeys)
-  const [backups, setBackups] = useState(seedBackups)
-  const [autoBackup, setAutoBackup] = useState(true)
 
   const tempRef = useRef('')
   const user: Staff | null = me ? toStaff({ ...me, lastLoginAt: me.lastLoginAt }) : null
@@ -222,7 +148,6 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     const own = me ? { [me.role]: me.permissions as Permissions } : {}
     return { ...own, ...roleMatrices, ...(me ? { [me.role]: me.permissions as Permissions } : {}) } as Record<Role, Permissions>
   }, [me, roleMatrices])
-  const transactions = useMemo(() => transactionsFrom(orders), [orders])
 
   const reloadStaff = useCallback(async () => {
     try { setStaff(((await server.get<{ items: ApiStaff[] }>('/v1/staff')).items).map(toStaff)) } catch { /* this role may not see the team */ }
@@ -302,14 +227,6 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
-  const setMaintenance = useCallback((m: Maintenance) => {
-    setMaintenanceState(m)
-    try {
-      localStorage.setItem('shopcore-maintenance', JSON.stringify(m))
-    } catch {
-      /* private mode: it just won't survive a refresh */
-    }
-  }, [])
 
   const toast = useCallback((message: string, kind?: 'success' | 'error') => {
     // Messages that explain why something didn't happen read as errors even when the caller didn't say so.
@@ -320,12 +237,28 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     toastTimer.current = setTimeout(() => setToastMessage(''), 2400)
   }, [])
 
+  // Maintenance mode is the shop's real setting: it also stops the shopper app, so it lives on the server.
+  const setMaintenance = useCallback((m: Maintenance) => {
+    setMaintenanceState(m)
+    void server.put('/v1/admin/app-status', { maintenance: m.on, message: m.message, returnAt: m.on ? new Date(Date.now() + m.etaMinutes * 60_000).toISOString() : null }).catch(() => {
+      setMaintenanceState((cur) => ({ ...cur, on: !m.on }))
+      toast('We couldn’t change maintenance mode. Check your permissions and try again.', 'error')
+    })
+  }, [toast])
+  useEffect(() => {
+    if (!me) return
+    let live = true
+    void server.get<{ maintenance: boolean; message: string; returnAt: string | null }>('/v1/admin/app-status').then((a) => {
+      if (live) setMaintenanceState({ on: a.maintenance, message: a.message, etaMinutes: a.returnAt ? Math.max(1, Math.round((Date.parse(a.returnAt) - Date.now()) / 60_000)) : 15 })
+    }, () => undefined)
+    return () => { live = false }
+  }, [me])
+
   useEffect(() => {
     setLeavePrompt((proceed) => setModal({ title: 'Discard unsaved changes?', message: 'Your edits haven’t been saved. If you leave now, they will be lost.', confirm: 'Discard changes', cancelLabel: 'Keep editing', tone: 'warning', onConfirm: proceed }))
     return () => setLeavePrompt(null)
   }, [])
 
-  const userName = me?.name ?? 'Staff'
   // Connected modules are audited by the server itself; this only exists for pages that are not connected yet.
   const log = useCallback((_action: string, _module: string, _type: AuditEntry['type'] = 'Updated') => {}, [])
 
@@ -385,47 +318,14 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     try { await server.del(`/v1/roles/${encodeURIComponent(name)}`); await reloadRoles(); return null } catch (e) { return message(e) }
   }, [reloadRoles])
 
-  const addNote = useCallback((customerId: string, text: string) => {
-    const at = new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })
-    setCustomers((list) => list.map((c) => (c.id === customerId ? { ...c, notes: [{ by: 'Amara', text, at }, ...c.notes] } : c)))
-  }, [])
-
-  const updateCustomer = useCallback((id: string, patch: Partial<Customer>) => setCustomers((list) => list.map((c) => (c.id === id ? { ...c, ...patch } : c))), [])
-  const assignRider = useCallback(
-    (orderId: string, riderId: string | null, note?: string) => {
-      const at = Date.now()
-      const name = riderId ? riders.find((r) => r.id === riderId)?.name : undefined
-      setOrders((list) =>
-        list.map((o) => {
-          if (o.id !== orderId) return o
-          const status = riderId && o.status === 'Pending' ? 'Processing' : o.status
-          const events = [...o.events]
-          if (status !== o.status) events.push({ status, at, by: userName })
-          events.push({ status: 'Note', at, by: userName, note: riderId ? `Assigned to ${name}${note ? ` · ${note}` : ''}` : 'Rider removed' })
-          return { ...o, riderId, status, events, alert: riderId === o.riderId ? o.alert : undefined }
-        }),
-      )
-    },
-    [riders, userName],
-  )
-  const addBackup = useCallback(
-    (type: Backup['type']) => {
-      const d = new Date()
-      const when = `${d.getDate()} ${d.toLocaleString('en-GB', { month: 'short' })} ${d.getFullYear()}, ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')} EAT`
-      setBackups((b) => [{ id: `b${Date.now()}`, when, type, size: '1.2 GB', duration: '4m 12s', status: 'Complete' }, ...b])
-      log(`${type} backup completed`, 'System health', 'Backup')
-    },
-    [log],
-  )
 
   const value = useMemo<Store>(
     () => ({
-      role, user, booting, login, logout, changeOwnPassword, roles, reloadStaff, reloadRoles, saveRole, createRole, deleteRole, previewRole, setPreviewRole, can, orders, setOrders, failures, setFailures, incidents, setIncidents, shifts, setShifts, assignRider, products, setProducts, categories, setCategories, riders, setRiders, transactions, payouts, setPayouts, deposits, setDeposits, dark, toggleDark: () => setDark((d) => !d), collapsed, toggleCollapsed: () => setCollapsed((c) => !c), toast, toastMessage, toastKind, offline: !online || forceOffline, setForceOffline, maintenance, setMaintenance, requestAccess, requestedAccess,
+      role, user, booting, login, logout, changeOwnPassword, roles, reloadStaff, reloadRoles, saveRole, createRole, deleteRole, previewRole, setPreviewRole, can, dark, toggleDark: () => setDark((d) => !d), collapsed, toggleCollapsed: () => setCollapsed((c) => !c), toast, toastMessage, toastKind, offline: !online || forceOffline, setForceOffline, maintenance, setMaintenance, requestAccess, requestedAccess,
       drawer, openDrawer: setDrawer, closeDrawer: () => setDrawer(null), modal, openModal: setModal, closeModal: () => setModal(null),
-      staff, addStaff, resetPassword, completeFirstSignIn, sameAsTemporary, canManageStaff, updateStaff, customers, addNote, updateCustomer, audit, log, permissions, zones, setZones, business, setBusiness, payments, setPayments,
-      templates, setTemplates, integrations, setIntegrations, keys, setKeys, backups, addBackup, autoBackup, setAutoBackup,
+      staff, addStaff, resetPassword, completeFirstSignIn, sameAsTemporary, canManageStaff, updateStaff, audit, log, permissions,
     }),
-    [role, user, booting, login, logout, changeOwnPassword, roles, reloadStaff, reloadRoles, saveRole, createRole, deleteRole, previewRole, can, orders, failures, incidents, shifts, assignRider, products, categories, riders, transactions, payouts, deposits, dark, collapsed, toast, toastMessage, toastKind, online, forceOffline, maintenance, setMaintenance, requestAccess, requestedAccess, drawer, modal, staff, addStaff, resetPassword, completeFirstSignIn, sameAsTemporary, canManageStaff, updateStaff, customers, addNote, updateCustomer, audit, log, permissions, zones, business, payments, templates, integrations, keys, backups, addBackup, autoBackup],
+    [role, user, booting, login, logout, changeOwnPassword, roles, reloadStaff, reloadRoles, saveRole, createRole, deleteRole, previewRole, can, dark, collapsed, toast, toastMessage, toastKind, online, forceOffline, maintenance, setMaintenance, requestAccess, requestedAccess, drawer, modal, staff, addStaff, resetPassword, completeFirstSignIn, sameAsTemporary, canManageStaff, updateStaff, audit, log, permissions],
   )
 
   return <StoreContext value={value}>{children}</StoreContext>
