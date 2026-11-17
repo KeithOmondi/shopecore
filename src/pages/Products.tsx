@@ -233,8 +233,6 @@ function Editor({ existing, lookups, onToast, allowed }: { existing: ApiProduct 
   const save = async () => {
     const e: Record<string, string> = {}
     if (f.name.trim().length < 2) e.name = 'Name the product'
-    const sku = f.sku.trim().toUpperCase()
-    if (!existing && !/^[A-Z0-9][A-Z0-9_-]{0,63}$/.test(sku)) e.sku = 'Use capital letters, numbers, dashes (for example TOTE-001)'
     const price = Number(f.price)
     if (!(price > 0)) e.price = 'Enter the price in shillings'
     const cost = f.cost === '' ? 0 : Number(f.cost)
@@ -256,14 +254,14 @@ function Editor({ existing, lookups, onToast, allowed }: { existing: ApiProduct 
     for (const a of optAttrs) optionsOut[a.key] = (options[a.key] ?? '').trim()
     const body = {
       name: f.name.trim(), description: f.description.trim(), priceCents: toCents(f.price), costCents: toCents(f.cost || '0'), categoryId: f.categoryId || null, subcategory: f.subcategory,
-      brandId: f.brandId || null, supplierId: f.supplierId || null, barcode: f.barcode.trim(), tax: f.tax, trackStock: f.track, status: f.status, reorderAt: reorder,
+      brandId: f.brandId || null, supplierId: f.supplierId || null, tax: f.tax, trackStock: f.track, status: f.status, reorderAt: reorder,
       specs: specsOut, options: optionsOut,
     }
     setBusy(true)
     try {
       let saved: ApiProduct
       if (existing) saved = await patch<ApiProduct>(`/v1/admin/products/${existing.id}`, body, existing.version)
-      else saved = await post<ApiProduct>('/v1/admin/products', { ...body, sku, initialStock: stock, ...(f.locationId ? { locationId: f.locationId } : {}) })
+      else saved = await post<ApiProduct>('/v1/admin/products', { ...body, initialStock: stock, ...(f.locationId ? { locationId: f.locationId } : {}) })
       const before = existing?.images?.map((i) => i.id).join(',') ?? ''
       if (images.map((i) => i.id).join(',') !== before) await put(`/v1/admin/products/${saved.id}/images`, { uploadIds: images.map((i) => i.id) })
       unsaved()
@@ -271,7 +269,6 @@ function Editor({ existing, lookups, onToast, allowed }: { existing: ApiProduct 
       navigate(!existing && optAttrs.length ? `/products/${saved.id}` : '/products')
     } catch (err) {
       if (err instanceof ApiError && err.status === 412) setErrors({ form: 'Someone else changed this product. Reload the page to see their changes, then try again.' })
-      else if (err instanceof ApiError && /sku/i.test(err.message)) setErrors({ sku: err.message })
       else setErrors({ form: says(err) })
     } finally { setBusy(false) }
   }
@@ -291,7 +288,7 @@ function Editor({ existing, lookups, onToast, allowed }: { existing: ApiProduct 
           <h2>Product details</h2>
           <Field label="Product name" value={f.name} onChange={set('name')} error={errors.name} placeholder="e.g. Canvas Weekender Bag" />
           <div className="form-grid">
-            <Field label="SKU" value={f.sku} onChange={set('sku')} error={errors.sku} disabled={!!existing} placeholder="e.g. TOTE-001" hint={existing ? 'A SKU can’t change once the product exists.' : undefined} />
+            <Field label="SKU" value={existing?.sku ?? ''} onChange={() => undefined} disabled placeholder="Made when you save" hint="Numbered by the system. It can’t be changed." />
             <Field label="Category" value={f.categoryId} onChange={(v) => { set('categoryId')(v); set('subcategory')('') }} options={[{ value: '', label: 'No category' }, ...lookups.categories.map((c) => ({ value: c.id, label: c.name }))]} />
             <Field label="Price (KES)" value={f.price} onChange={set('price')} error={errors.price} />
             <Field label="Status" value={f.status} onChange={(v) => set('status')(v as typeof f.status)} options={[{ value: 'draft', label: 'Draft' }, { value: 'active', label: 'Active' }, { value: 'archived', label: 'Archived' }]} />
@@ -311,7 +308,7 @@ function Editor({ existing, lookups, onToast, allowed }: { existing: ApiProduct 
             <Field label="Subcategory" value={f.subcategory} onChange={set('subcategory')} options={[{ value: '', label: 'None' }, ...subs.map((s) => ({ value: s, label: s }))]} />
             <Field label="Supplier" value={f.supplierId} onChange={set('supplierId')} options={[{ value: '', label: 'No supplier' }, ...lookups.suppliers.map((s) => ({ value: s.id, label: s.name }))]} />
             <Field label="Cost per unit (KES)" value={f.cost} onChange={set('cost')} error={errors.cost} hint="What you pay. Used for stock value and profit." />
-            <Field label="Barcode" value={f.barcode} onChange={set('barcode')} placeholder="Optional" />
+            <Field label="Barcode" value={existing?.barcode ?? ''} onChange={() => undefined} disabled placeholder="Made when you save" hint="Made by the system (EAN-13). It can’t be changed." />
             <Field label="Tax category" value={f.tax} onChange={(v) => set('tax')(v as typeof f.tax)} options={[{ value: 'standard', label: 'Standard VAT' }, { value: 'zero', label: 'Zero-rated' }]} />
             <Field label="Inventory tracking" value={f.track ? 'Track quantity' : 'Do not track'} onChange={(v) => set('track')(v === 'Track quantity')} options={['Track quantity', 'Do not track']} />
           </div>
@@ -381,8 +378,6 @@ function AttrField({ attr, value, onChange, error }: { attr: Attribute; value: s
   return <Field label={label} value={value} onChange={onChange} error={error} type={attr.kind === 'number' ? 'number' : 'text'} />
 }
 
-const abbr = (v: string) => v.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 4)
-
 /** The choices of one item (other sizes, colours, storage...): each is its own product with its own SKU, price and stock. */
 function VariantsPanel({ product, attrs, ready, onChanged }: { product: ApiProduct; attrs: Attribute[]; ready: boolean; onChanged: () => void }) {
   const { toast, can } = useStore()
@@ -436,7 +431,7 @@ function VariantsPanel({ product, attrs, ready, onChanged }: { product: ApiProdu
 function VariantBuilder({ product, attrs, existing, onClose, onDone, onError }: { product: ApiProduct; attrs: Attribute[]; existing: ApiProduct[]; onClose: () => void; onDone: () => void; onError: (m: string) => void }) {
   const [picked, setPicked] = useState<Record<string, string[]>>({})
   const [typed, setTyped] = useState<Record<string, string>>({})
-  const [rows, setRows] = useState<{ options: Record<string, string>; sku: string; price: string; stock: string }[] | null>(null)
+  const [rows, setRows] = useState<{ options: Record<string, string>; price: string; stock: string }[] | null>(null)
   const [price, setPrice] = useState(String(shillings(product.priceCents)))
   const [stock, setStock] = useState('0')
   const [err, setErr] = useState('')
@@ -452,21 +447,18 @@ function VariantBuilder({ product, attrs, existing, onClose, onDone, onError }: 
     const fresh = combos.filter((c) => !have.has(JSON.stringify(attrs.map((a) => c[a.key]!.toLowerCase()))))
     if (!fresh.length) return setErr('All of those combinations already exist')
     setErr('')
-    setRows(fresh.map((o) => ({ options: o, sku: [product.sku, ...attrs.map((a) => abbr(o[a.key]!))].join('-').slice(0, 64), price, stock })))
+    setRows(fresh.map((o) => ({ options: o, price, stock })))
   }
   const create = async () => {
     if (!rows) return
-    const skus = rows.map((r) => r.sku.trim().toUpperCase())
-    if (skus.some((x) => !/^[A-Z0-9][A-Z0-9_-]{0,63}$/.test(x))) return setErr('Every SKU needs capital letters, numbers or dashes')
-    if (new Set(skus).size !== skus.length) return setErr('Two variants have the same SKU. Make each one different.')
     if (rows.some((r) => !(Number(r.price) > 0) || !Number.isInteger(Number(r.stock)) || Number(r.stock) < 0)) return setErr('Check the price and stock of every row')
     setBusy(true)
     try {
-      await post(`/v1/admin/products/${product.id}/variants`, { variants: rows.map((r, i) => ({ sku: skus[i], options: r.options, priceCents: toCents(r.price), initialStock: Number(r.stock) })) })
+      await post(`/v1/admin/products/${product.id}/variants`, { variants: rows.map((r) => ({ options: r.options, priceCents: toCents(r.price), initialStock: Number(r.stock) })) })
       onDone()
     } catch (e) { setErr(says(e)); onError(says(e)) } finally { setBusy(false) }
   }
-  const setRow = (i: number, k: 'sku' | 'price' | 'stock', v: string) => setRows((x) => x && x.map((r, n) => (n === i ? { ...r, [k]: v } : r)))
+  const setRow = (i: number, k: 'price' | 'stock', v: string) => setRows((x) => x && x.map((r, n) => (n === i ? { ...r, [k]: v } : r)))
 
   return (
     <div style={{ border: '1px solid var(--line)', borderRadius: 8, padding: 12 }}>
@@ -504,7 +496,7 @@ function VariantBuilder({ product, attrs, existing, onClose, onDone, onError }: 
               {rows.map((r, i) => (
                 <tr key={i}>
                   <td>{attrs.map((a) => r.options[a.key]).join(' / ')}</td>
-                  <td><input aria-label="SKU" value={r.sku} onChange={(e) => setRow(i, 'sku', e.target.value)} style={{ width: 150 }} /></td>
+                  <td className="subtext">Made when you save</td>
                   <td><input aria-label="Price" value={r.price} onChange={(e) => setRow(i, 'price', e.target.value)} style={{ width: 90 }} /></td>
                   <td><input aria-label="Stock" value={r.stock} onChange={(e) => setRow(i, 'stock', e.target.value)} style={{ width: 60 }} /></td>
                 </tr>
