@@ -16,7 +16,7 @@ interface Banner { id: string; title: string; label: string; link: string; linkO
 
 function BannerForm({ b, onDone }: { b?: Banner; onDone: () => void }) {
   const { closeModal, toast } = useStore()
-  const [f, setF] = useState({ title: b?.title ?? '', label: b?.label ?? '', link: b?.link ?? '/deals', platform: b?.platform ?? 'Web and mobile', startsAt: toLocal(b?.startsAt ?? new Date().toISOString()), endsAt: toLocal(b?.endsAt ?? new Date(Date.now() + 14 * 86_400_000).toISOString()), alt: b?.alt ?? '', published: b?.published ?? false })
+  const [f, setF] = useState({ title: b?.title ?? '', label: b?.label ?? '', link: b?.link ?? '', platform: b?.platform ?? 'Web and mobile', startsAt: toLocal(b?.startsAt ?? new Date().toISOString()), endsAt: toLocal(b?.endsAt ?? new Date(Date.now() + 14 * 86_400_000).toISOString()), alt: b?.alt ?? '', published: b?.published ?? false })
   const [image, setImage] = useState<string | null>(b?.imageRef ?? null)
   const [err, setErr] = useState('')
   const [busy, setBusy] = useState(false)
@@ -27,18 +27,17 @@ function BannerForm({ b, onDone }: { b?: Banner; onDone: () => void }) {
     try { setImage((await uploadFile('banner', file)).id) } catch (e) { setErr(says(e)) }
   }
   const go = async () => {
-    if (!f.title.trim()) return setErr('Give the banner a headline')
-    if (!f.link.trim().startsWith('/')) return setErr('The link must start with / (for example /product/<id> or /categories/bags)')
-    if (f.published && !f.alt.trim()) return setErr('Describe the picture in a few words before showing the banner in the app')
+    if (!f.title.trim() && !image) return setErr('Add a picture or give the banner a headline')
+    if (f.link.trim() && !f.link.trim().startsWith('/')) return setErr('The link must start with / (for example /product/<id> or /categories/bags)')
     setBusy(true)
     try { const body = { ...f, title: f.title.trim(), label: f.label.trim(), link: f.link.trim(), startsAt: fromLocal(f.startsAt), endsAt: fromLocal(f.endsAt), imageRef: image }; if (b) await patch(`/v1/admin/banners/${b.id}`, body); else await post('/v1/admin/banners', body); onDone(); closeModal(); toast('Banner saved') } catch (e) { setErr(says(e)) } finally { setBusy(false) }
   }
   // Show each message beside the field it is about; anything else goes above the buttons.
-  const about = /headline/i.test(err) ? 'title' : /picture|alt text|describe/i.test(err) ? 'alt' : /link|\//i.test(err) ? 'link' : 'other'
+  const about = /headline/i.test(err) ? 'title' : /alt text|describe/i.test(err) ? 'alt' : /link|\//i.test(err) ? 'link' : 'other'
   return (
     <>
-      <Field label="Headline" value={f.title} onChange={set('title')} error={about === 'title' ? err : undefined} />
-      <div className="sp-form2"><Field label="Small label above the headline (optional)" value={f.label} onChange={set('label')} /><Field label="Where tapping it goes" value={f.link} onChange={set('link')} error={about === 'link' ? err : undefined} hint="For example /categories/bags or /product/… (a page inside the app)." /><Field label="Shows on" value={f.platform} onChange={set('platform')} options={['Web and mobile', 'Mobile only', 'Web only']} /><Field label="Describe the picture" value={f.alt} onChange={set('alt')} error={about === 'alt' ? err : undefined} hint="A few words for people who can’t see it, such as “Flash sale, up to 50% off”. Needed to show the banner." /><Field label="Starts" type="datetime-local" value={f.startsAt} onChange={set('startsAt')} /><Field label="Ends" type="datetime-local" value={f.endsAt} onChange={set('endsAt')} /></div>
+      <Field label="Headline (optional if the picture says it all)" value={f.title} onChange={set('title')} error={about === 'title' ? err : undefined} />
+      <div className="sp-form2"><Field label="Small label above the headline (optional)" value={f.label} onChange={set('label')} /><Field label="Where tapping it goes (optional)" value={f.link} onChange={set('link')} error={about === 'link' ? err : undefined} hint="Leave empty for a banner that does nothing when tapped. Otherwise a page inside the app, such as /categories/bags or /product/…" /><Field label="Shows on" value={f.platform} onChange={set('platform')} options={['Web and mobile', 'Mobile only', 'Web only']} /><Field label="Describe the picture (optional)" value={f.alt} onChange={set('alt')} error={about === 'alt' ? err : undefined} hint="A few words for people who can’t see it, such as “Flash sale, up to 50% off”." /><Field label="Starts" type="datetime-local" value={f.startsAt} onChange={set('startsAt')} /><Field label="Ends" type="datetime-local" value={f.endsAt} onChange={set('endsAt')} /></div>
       <div className="field"><label>Picture</label>{image && <img src={`/v1/files/${image}`} alt="Banner preview" style={{ maxHeight: 100, borderRadius: 6, display: 'block', marginBottom: 6 }} />}<label className="drop" style={{ cursor: 'pointer' }}>Click to choose a picture (JPG, PNG or WebP, up to 5 MB)<input type="file" accept="image/png,image/jpeg,image/webp" className="sr-only" onChange={(e) => void pick(e.target.files?.[0])} /></label></div>
       <label className="sp-row" style={{ gap: 6, marginBottom: 8 }}><input type="checkbox" checked={f.published} onChange={(e) => set('published')(e.target.checked)} /> Show it in the app</label>
       {about === 'other' && err && <div className="field-error" role="alert" style={{ marginBottom: 8 }}>{err}</div>}
@@ -54,7 +53,7 @@ export function BannersManager() {
   const act = async (what: () => Promise<unknown>) => { try { await what(); reload() } catch (e) { toast(says(e)) } }
   const cols: Column<Banner>[] = [
     { key: 'i', header: '', render: (b) => (b.imageRef ? <img src={`/v1/files/${b.imageRef}`} alt="" style={{ width: 64, height: 36, objectFit: 'cover', borderRadius: 4 }} /> : <span className="subtext">No picture</span>) },
-    { key: 't', header: 'Banner', render: (b) => <div><b>{b.title}</b><div className="subtext">{b.label}{b.label ? ' · ' : ''}{b.link}{!b.linkOk && ' · link looks broken'}</div></div> },
+    { key: 't', header: 'Banner', render: (b) => <div><b>{b.title || 'Picture only'}</b><div className="subtext">{b.label}{b.label && b.link ? ' · ' : ''}{b.link || 'Not clickable'}{!b.linkOk && b.link && ' · link looks broken'}</div></div> },
     { key: 'p', header: 'Shows on', render: (b) => b.platform },
     { key: 's', header: 'Status', render: (b) => <Badge tone={b.status === 'Live' ? 'green' : b.status === 'Scheduled' ? 'blue' : 'gray'}>{b.status}</Badge> },
     { key: 'r', header: 'Runs', render: (b) => `${dateTime(Date.parse(b.startsAt)).split(',')[0]} – ${dateTime(Date.parse(b.endsAt)).split(',')[0]}` },
@@ -69,7 +68,7 @@ export function BannersManager() {
             <Btn small disabled={!edit} label="Move up" onClick={() => void act(() => post(`/v1/admin/banners/${b.id}/move`, { dir: -1 }))}>↑</Btn>
             <Btn small disabled={!edit} label="Move down" onClick={() => void act(() => post(`/v1/admin/banners/${b.id}/move`, { dir: 1 }))}>↓</Btn>
             <Btn small disabled={!edit} onClick={() => openModal({ title: 'Edit banner', body: <BannerForm b={b} onDone={reload} />, noActions: true })}>Edit</Btn>
-            <Btn small disabled={!can('Marketing', 'Delete')} onClick={() => openModal({ title: `Delete “${b.title}”?`, confirm: 'Delete', danger: true, onConfirm: () => { void act(() => del(`/v1/admin/banners/${b.id}`)) } })}>Delete</Btn>
+            <Btn small disabled={!can('Marketing', 'Delete')} onClick={() => openModal({ title: `Delete ${b.title ? `“${b.title}”` : 'this banner'}?`, confirm: 'Delete', danger: true, onConfirm: () => { void act(() => del(`/v1/admin/banners/${b.id}`)) } })}>Delete</Btn>
           </div>
         )} /></div>
     </>

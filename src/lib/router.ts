@@ -288,14 +288,16 @@ export const PAGE_MODULE: Record<string, string> = {
 }
 
 /** Customer support only sees the monitoring side of dispatch (not assignment or rider management). */
-const SUPPORT_DISPATCH = new Set(['Dispatch overview', 'Live order detail', 'Delayed and stuck orders', 'Cancelled and failed deliveries', 'Incidents and SOS alerts'])
+const SUPPORT_DISPATCH = new Set(['Dispatch overview', 'Live order detail', 'Delayed and stuck orders', 'Cancelled and failed deliveries'])
+/** Pages a customer-care agent has no use for. Hidden from the menu and not openable, even though the Products and Support areas are on. */
+const SUPPORT_HIDDEN = new Set(['Rider support tickets', 'Incidents and SOS alerts', 'Categories and subcategories', 'Brands', 'Bulk import and export', 'Knowledge base and FAQ editor'])
 const DISPATCH_PAGES = new Set(['Dispatch overview', 'Order queue', 'Assign rider', 'Live order detail', 'Reassign order', 'Delayed and stuck orders', 'Cancelled and failed deliveries', 'Incidents and SOS alerts'])
 
 /** Can this role open the page? `perms` is that role’s row of the permission matrix. */
 export function canOpen(role: string, label: string, perms: Record<string, boolean[]> | undefined): boolean {
   if (label === 'Executive overview') return true
   if (role === 'Owner admin') return true
-  if (role === 'Customer support' && label === 'Incidents and SOS alerts') return true
+  if (role === 'Customer support' && SUPPORT_HIDDEN.has(label)) return false
   if (role === 'Customer support' && DISPATCH_PAGES.has(label)) return SUPPORT_DISPATCH.has(label) && !!perms?.Dispatch?.[0]
   const mod = PAGE_MODULE[label]
   return mod ? !!perms?.[mod]?.[0] : false

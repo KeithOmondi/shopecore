@@ -6,6 +6,7 @@ import { dateTime } from '../lib/format'
 import { navigate } from '../lib/router'
 import { useStore } from '../lib/store'
 import { useGet } from '../lib/use-get'
+import { useLive } from '../lib/use-live'
 
 const says = (e: unknown) => (e instanceof ApiError ? e.message : 'Something went wrong. Try again.')
 const ago = (iso: string) => {
@@ -152,63 +153,84 @@ export function TicketDetail({ id }: { id: string }) {
 // ---- live chat ------------------------------------------------------------------------------------------------------
 
 interface ChatRow { id: string; customerId: string; name: string; assignee: string | null; unread: number; lastAt: string; order: string | null; lastMessage: string | null }
-interface ChatFull { id: string; name: string; assignee: string | null; closed: boolean; order: string | null; messages: ThreadMessage[] }
+interface ChatList { items: ChatRow[]; version?: string }
+interface ChatFull { id: string; name: string; assignee: string | null; closed: boolean; order: string | null; messages: ThreadMessage[]; version?: string }
 
+const clock = (iso: string) => new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+
+/** Customer chats. New messages and replies show up the moment they are sent, with no refresh. */
 export function LiveChat() {
   const { can, toast } = useStore()
   const [state, setState] = useState<'open' | 'closed'>('open')
-  const list = useGet<{ items: ChatRow[] }>(`/v1/admin/chats?state=${state}`, 5_000)
   const [sel, setSel] = useState<string | null>(null)
-  const chat = useGet<ChatFull>(sel ? `/v1/admin/chats/${sel}` : null, 4_000)
+  const list = useLive<ChatList>(`/v1/admin/chats?state=${state}`)
+  const chat = useLive<ChatFull>(sel ? `/v1/admin/chats/${sel}` : null)
   const [text, setText] = useState('')
   const [busy, setBusy] = useState(false)
-  const end = useRef<HTMLDivElement>(null)
-  const count = chat.data?.messages.length ?? 0
-  useEffect(() => { end.current?.scrollIntoView?.({ block: 'end' }) }, [count])
+  const box = useRef<HTMLDivElement>(null)
+  const c = chat.data
+  const count = c?.messages.length ?? 0
+  useEffect(() => { const el = box.current; if (el) el.scrollTop = el.scrollHeight }, [count, sel])
   const edit = can('Support', 'Edit')
   const send = async () => {
+    const body = text.trim()
+    if (!body || !sel) return
     setBusy(true)
-    try { await post(`/v1/admin/chats/${sel}/messages`, { text: text.trim() }); setText(''); chat.reload(); list.reload() } catch (e) { toast(says(e)) } finally { setBusy(false) }
+    try { await post(`/v1/admin/chats/${sel}/messages`, { text: body }); setText(''); chat.reload() } catch (e) { toast(says(e)) } finally { setBusy(false) }
   }
   const act = async (what: 'take' | 'close') => {
-    try { await post(`/v1/admin/chats/${sel}/${what}`); toast(what === 'take' ? 'You took the chat' : 'Chat closed'); chat.reload(); list.reload() } catch (e) { toast(says(e)) }
+    try { await post(`/v1/admin/chats/${sel}/${what}`); toast(what === 'take' ? 'You took the chat' : 'Chat closed'); if (what === 'close') setSel(null); else chat.reload() } catch (e) { toast(says(e)) }
   }
-  const c = chat.data
+  const rows = list.data?.items ?? []
   return (
     <>
-      <PageHead title="Live chat" desc="Talk to customers who message from the app." actions={<select className="select" aria-label="Chats" value={state} onChange={(e) => { setState(e.target.value as typeof state); setSel(null) }}><option value="open">Open chats</option><option value="closed">Closed chats</option></select>} />
-      <div className="sp-two">
-        <Panel title={state === 'open' ? 'Open chats' : 'Closed chats'}>
-          {list.loading && <div className="panel-sub">Loading…</div>}
-          {list.data?.items.length === 0 && <div className="panel-sub">No {state} chats.</div>}
-          {list.data?.items.map((r) => (
-            <div className="list-row" key={r.id} style={r.id === sel ? { background: 'var(--blue-soft)', paddingInline: 8, borderRadius: 6 } : undefined}>
-              <span><button className="sp-link" onClick={() => setSel(r.id)}>{r.name || 'Customer'}</button><small>{r.lastMessage ?? ''}{r.order ? ` · ${r.order}` : ''}</small></span>
-              <span className="sp-row">{r.unread > 0 && <Badge tone="red">{`${r.unread} new`}</Badge>}<span className="subtext">{ago(r.lastAt)}</span></span>
-            </div>
+      <PageHead title="Live chat" desc="Talk to customers who message from the app. Messages arrive as they are sent." actions={<select className="select" aria-label="Chats" value={state} onChange={(e) => { setState(e.target.value as typeof state); setSel(null) }}><option value="open">Open chats</option><option value="closed">Closed chats</option></select>} />
+      {(list.failed || chat.failed) && <Notice mark="!">Lost the connection. Trying again…</Notice>}
+      <div className="panel sp-chat" style={{ gridTemplateColumns: 'minmax(220px, 300px) minmax(0, 1fr)' }}>
+        <div className="sp-chat-list">
+          {list.loading && <div className="panel-sub" style={{ padding: 14 }}>Loading…</div>}
+          {!list.loading && rows.length === 0 && <div className="panel-sub" style={{ padding: 14 }}>No {state} chats.</div>}
+          {rows.map((r) => (
+            <button key={r.id} type="button" className={`sp-person${r.id === sel ? ' active' : ''}`} onClick={() => setSel(r.id)}>
+              <span className="avatar" aria-hidden>{(r.name || 'C').charAt(0).toUpperCase()}</span>
+              <span className="sp-person-copy">
+                <b>{r.name || 'Customer'}</b>
+                <p>{r.lastMessage ?? 'No messages yet'}</p>
+                <small className="subtext">{ago(r.lastAt)}{r.order ? ` · ${r.order}` : ''}{r.assignee ? ` · ${r.assignee}` : ' · Waiting'}</small>
+              </span>
+              {r.unread > 0 && <span className="sp-count">{r.unread}</span>}
+            </button>
           ))}
-        </Panel>
-        <Panel title={c ? c.name : 'Chat'} sub={c ? `${c.assignee ? `With ${c.assignee}` : 'Not taken yet'}${c.order ? ` · ${c.order}` : ''}` : 'Choose a chat on the left'}
-          right={c && !c.closed ? <span className="sp-row"><Btn small disabled={!edit} onClick={() => void act('take')}>Take</Btn><Btn small disabled={!edit} onClick={() => void act('close')}>Close</Btn></span> : undefined}>
-          {c && (
+        </div>
+        <div className="sp-thread">
+          {!sel && <div className="panel-sub" style={{ margin: 'auto', padding: 24 }}>Choose a chat on the left to read it and reply.</div>}
+          {sel && !c && <div className="panel-sub" style={{ margin: 'auto', padding: 24 }}>{chat.failed ? 'Could not open this chat.' : 'Opening…'}</div>}
+          {sel && c && (
             <>
-              <div style={{ maxHeight: 360, overflow: 'auto', marginBottom: 10 }}>
+              <div className="sp-thread-head">
+                <span className="avatar" aria-hidden>{(c.name || 'C').charAt(0).toUpperCase()}</span>
+                <span style={{ flex: 1 }}><b>{c.name}</b><br /><small className="subtext">{c.assignee ? `With ${c.assignee}` : 'Not taken yet'}{c.order ? ` · ${c.order}` : ''}</small></span>
+                {!c.closed && <span className="sp-row"><Btn small disabled={!edit || !!c.assignee} onClick={() => void act('take')}>Take</Btn><Btn small disabled={!edit} onClick={() => void act('close')}>End chat</Btn></span>}
+              </div>
+              <div className="sp-thread-msgs" ref={box}>
                 {c.messages.map((m) => (
-                  <div key={m.id} style={{ marginBottom: 8, textAlign: m.from === 'agent' ? 'right' : 'left' }}>
-                    <span style={{ display: 'inline-block', padding: '8px 11px', borderRadius: 10, background: m.from === 'agent' ? 'var(--blue-soft)' : 'var(--soft, #F3F4F6)', maxWidth: '85%', textAlign: 'left' }}>{m.text}</span>
-                    <div className="subtext">{m.by} · {ago(m.at)}</div>
+                  <div key={m.id} className={`sp-cb${m.from === 'agent' ? ' mine' : ''}`}>
+                    {m.text}
+                    <div className="sp-cb-time">{m.by} · {clock(m.at)}</div>
                   </div>
                 ))}
-                <div ref={end} />
               </div>
-              {c.closed ? <Notice mark="i">This chat has ended.</Notice> : (
-                <div className="sp-row"><input style={{ flex: 1 }} aria-label="Message" value={text} placeholder="Write a message…" onChange={(e) => setText(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && text.trim() && !busy && edit) void send() }} /><Btn variant="primary" disabled={!edit || busy || !text.trim()} onClick={() => void send()}>Send</Btn></div>
+              {c.closed ? <div className="sp-compose"><Notice mark="i">This chat has ended.</Notice></div> : (
+                <div className="sp-compose">
+                  <input style={{ flex: 1 }} aria-label="Message" value={text} placeholder={edit ? 'Write a message…' : 'You can read chats but not reply'} disabled={!edit}
+                    onChange={(e) => setText(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey && !busy && edit) { e.preventDefault(); void send() } }} />
+                  <Btn variant="primary" disabled={!edit || busy || !text.trim()} onClick={() => void send()}>Send</Btn>
+                </div>
               )}
             </>
           )}
-        </Panel>
+        </div>
       </div>
     </>
   )
 }
-
