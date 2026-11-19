@@ -1,12 +1,13 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 
+import { ProductPicker } from '../components/ProductPicker'
 import { Badge, Btn, DataTable, Field, Notice, PageHead, Panel, SettingRow, Stat, type Column } from '../components/ui'
-import { ApiError, del, get, patch, post, put } from '../lib/api'
+import { ApiError, del, patch, post, put } from '../lib/api'
 import { dateTime, kes } from '../lib/format'
 import { navigate } from '../lib/router'
 import { useStore } from '../lib/store'
 import { useGet } from '../lib/use-get'
-import type { ApiProduct, Category } from './Products'
+import type { Category } from './Products'
 
 const says = (e: unknown) => (e instanceof ApiError ? e.message : 'Something went wrong. Try again.')
 const shillings = (c: number) => c / 100
@@ -197,17 +198,8 @@ interface Flash { id: string; name: string; startsAt: string; endsAt: string; ty
 function FlashForm({ f0, onDone }: { f0?: Flash; onDone: () => void }) {
   const { closeModal, toast } = useStore()
   const [f, setF] = useState({ name: f0?.name ?? '', startsAt: toLocal(f0?.startsAt ?? new Date().toISOString()), endsAt: toLocal(f0?.endsAt ?? new Date(Date.now() + 86_400_000).toISOString()), type: f0?.type ?? 'percent', value: f0 ? String(f0.type === 'fixed' ? shillings(f0.value) : f0.value) : '', placement: f0?.placement ?? 'Home carousel', stockGuard: String(f0?.stockGuard ?? 10) })
-  const [picked, setPicked] = useState<{ id: string; name: string }[]>([])
-  const [search, setSearch] = useState('')
-  const [found, setFound] = useState<ApiProduct[]>([])
   const [ids, setIds] = useState<string[]>(f0?.productIds ?? [])
   const [err, setErr] = useState('')
-  useEffect(() => {
-    if (search.trim().length < 2) return
-    let live = true
-    const t = setTimeout(() => { void get<{ items: ApiProduct[] }>(`/v1/admin/products?limit=8&status=active&q=${encodeURIComponent(search.trim())}`).then((r) => { if (live) setFound(r.items) }, () => undefined) }, 250)
-    return () => { live = false; clearTimeout(t) }
-  }, [search])
   const set = (k: keyof typeof f) => (v: string) => { setF((x) => ({ ...x, [k]: v })); setErr('') }
   const go = async (state: 'draft' | 'live') => {
     if (!f.name.trim()) return setErr('Name the sale')
@@ -220,9 +212,7 @@ function FlashForm({ f0, onDone }: { f0?: Flash; onDone: () => void }) {
     <>
       <Field label="Name" value={f.name} onChange={set('name')} error={err} />
       <div className="sp-form2"><Field label="Starts" type="datetime-local" value={f.startsAt} onChange={set('startsAt')} /><Field label="Ends" type="datetime-local" value={f.endsAt} onChange={set('endsAt')} /><Field label="Discount type" value={f.type} onChange={set('type')} options={[{ value: 'percent', label: 'Percent off' }, { value: 'fixed', label: 'Amount off (KES)' }]} /><Field label={f.type === 'percent' ? 'Percent off' : 'Amount off (KES)'} value={f.value} onChange={set('value')} /><Field label="Where it shows" value={f.placement} onChange={set('placement')} options={['Home carousel', 'Category pages', 'Product pages only']} /><Field label="Stop when stock is down to" value={f.stockGuard} onChange={set('stockGuard')} /></div>
-      <Field label="Add products" value={search} onChange={setSearch} placeholder="Type a name or SKU" />
-      {found.length > 0 && search.trim().length >= 2 && <div className="sp-row" style={{ flexWrap: 'wrap', marginBottom: 8 }}>{found.filter((p) => !ids.includes(p.id)).map((p) => <button key={p.id} className="pill" onClick={() => { setIds([...ids, p.id]); setPicked([...picked, { id: p.id, name: p.name }]); setSearch(''); setFound([]) }}>{p.name}</button>)}</div>}
-      <div className="sp-row" style={{ flexWrap: 'wrap', marginBottom: 8 }}>{ids.map((id) => <span key={id} className="pill">{picked.find((p) => p.id === id)?.name ?? 'Product'} <button className="link-btn" aria-label="Remove" onClick={() => setIds(ids.filter((x) => x !== id))}>×</button></span>)}</div>
+      <ProductPicker ids={ids} onChange={(next) => { setIds(next); setErr('') }} />
       <div className="actions" style={{ justifyContent: 'flex-end' }}><Btn onClick={closeModal}>Cancel</Btn><Btn onClick={() => void go('draft')}>Save as draft</Btn><Btn variant="primary" onClick={() => void go('live')}>Save and publish</Btn></div>
     </>
   )
@@ -257,15 +247,7 @@ function BundleForm({ b, onDone }: { b?: Bundle; onDone: () => void }) {
   const { closeModal, toast } = useStore()
   const [f, setF] = useState({ name: b?.name ?? '', type: b?.type ?? 'Bundle', description: b?.description ?? '', price: String(shillings(b?.priceCents ?? 0)), percent: String(b?.percent ?? 0), minItems: String(b?.minItems ?? 0) })
   const [items, setItems] = useState<{ productId: string; quantity: number; name: string }[]>((b?.items ?? []).map((i) => ({ productId: i.productId, quantity: i.quantity, name: i.name ?? 'Product' })))
-  const [search, setSearch] = useState('')
-  const [found, setFound] = useState<ApiProduct[]>([])
   const [err, setErr] = useState('')
-  useEffect(() => {
-    if (search.trim().length < 2) return
-    let live = true
-    const t = setTimeout(() => { void get<{ items: ApiProduct[] }>(`/v1/admin/products?limit=8&status=active&q=${encodeURIComponent(search.trim())}`).then((r) => { if (live) setFound(r.items) }, () => undefined) }, 250)
-    return () => { live = false; clearTimeout(t) }
-  }, [search])
   const set = (k: keyof typeof f) => (v: string) => { setF((x) => ({ ...x, [k]: v })); setErr('') }
   const go = async (state: 'draft' | 'live') => {
     if (!f.name.trim()) return setErr('Name the offer')
@@ -275,10 +257,12 @@ function BundleForm({ b, onDone }: { b?: Bundle; onDone: () => void }) {
   return (
     <>
       <Field label="Name" value={f.name} onChange={set('name')} error={err} />
-      <div className="sp-form2"><Field label="Kind" value={f.type} onChange={set('type')} options={['Bundle', 'Multi-buy', 'Cross-sell']} /><Field label="Bundle price (KES, 0 if using %)" value={f.price} onChange={set('price')} /><Field label="Or percent off the items" value={f.percent} onChange={set('percent')} /><Field label="Minimum items (multi-buy)" value={f.minItems} onChange={set('minItems')} /></div>
+      <div className="sp-form2"><Field label="Kind" value={f.type} onChange={set('type')} options={['Bundle', 'Multi-buy', 'Cross-sell']} />{f.type === 'Multi-buy'
+        ? <><Field label="Percent off" value={f.percent} onChange={set('percent')} /><Field label="Buy at least (items)" value={f.minItems} onChange={set('minItems')} /></>
+        : <Field label="Bundle price (KES), below the items’ total" value={f.price} onChange={set('price')} />}</div>
+      {f.type === 'Multi-buy' && <p style={{ fontSize: 12, opacity: 0.75, margin: '0 0 8px' }}>A multi-buy gives a percentage off when a customer buys at least this many items. Pick the products it applies to, or none to apply it to any.</p>}
       <Field label="Description" value={f.description} onChange={set('description')} />
-      <Field label="Add products" value={search} onChange={setSearch} placeholder="Type a name or SKU" />
-      {found.length > 0 && search.trim().length >= 2 && <div className="sp-row" style={{ flexWrap: 'wrap', marginBottom: 8 }}>{found.filter((p) => !items.some((i) => i.productId === p.id)).map((p) => <button key={p.id} className="pill" onClick={() => { setItems([...items, { productId: p.id, quantity: 1, name: p.name }]); setSearch(''); setFound([]) }}>{p.name}</button>)}</div>}
+      <ProductPicker ids={items.map((i) => i.productId)} onChange={(next, names) => setItems(next.map((id) => items.find((i) => i.productId === id) ?? { productId: id, quantity: 1, name: names[id] ?? 'Product' }))} />
       {items.map((i, k) => <div key={i.productId} className="sp-row" style={{ marginBottom: 4 }}><span style={{ flex: 1 }}>{i.name}</span><input className="qty" aria-label={`Quantity of ${i.name}`} value={i.quantity} onChange={(e) => setItems(items.map((x, n) => (n === k ? { ...x, quantity: Math.max(1, Number(e.target.value) || 1) } : x)))} /><Btn small label="Remove" onClick={() => setItems(items.filter((_, n) => n !== k))}>×</Btn></div>)}
       <div className="actions" style={{ justifyContent: 'flex-end' }}><Btn onClick={closeModal}>Cancel</Btn><Btn onClick={() => void go('draft')}>Save as draft</Btn><Btn variant="primary" onClick={() => void go('live')}>Save and publish</Btn></div>
     </>
